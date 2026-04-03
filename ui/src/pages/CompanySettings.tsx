@@ -55,6 +55,7 @@ export function CompanySettings() {
   const [tailnetBaseUrl, setTailnetBaseUrl] = useState(() =>
     localStorage.getItem("paperclip_tailnet_base_url") ?? ""
   );
+  const [externalInvite, setExternalInvite] = useState(false);
 
   const generalDirty =
     !!selectedCompany &&
@@ -136,25 +137,20 @@ export function CompanySettings() {
   };
 
   const inviteMutation = useMutation({
-    mutationFn: () =>
-      accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
-    onSuccess: (invite) => handleInviteSuccess(invite),
-    onError: (err) => {
-      setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
-      );
-    }
-  });
-
-  const tailnetInviteMutation = useMutation({
     mutationFn: () => {
-      const url = tailnetBaseUrl.trim();
-      if (!url) throw new Error("Set a Tailnet base URL first (e.g. https://hostname.tailnet.ts.net:3100).");
+      if (externalInvite) {
+        const url = tailnetBaseUrl.trim();
+        if (!url) throw new Error("Set an external base URL first (e.g. https://hostname.tailnet.ts.net:3100).");
+      }
       return accessApi.createOpenClawInvitePrompt(selectedCompanyId!);
     },
     onSuccess: (invite) => {
-      const url = tailnetBaseUrl.trim().replace(/\/+$/, "");
-      handleInviteSuccess(invite, url);
+      if (externalInvite) {
+        const url = tailnetBaseUrl.trim().replace(/\/+$/, "");
+        handleInviteSuccess(invite, url);
+      } else {
+        handleInviteSuccess(invite);
+      }
     },
     onError: (err) => {
       setInviteError(
@@ -430,45 +426,45 @@ export function CompanySettings() {
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              Generate a Minion agent invite snippet.
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text="Creates a short-lived Minion gateway agent invite and renders a copy-ready prompt." />
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs text-muted-foreground">
-              Tailnet base URL
-            </label>
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-              placeholder="https://hostname.tailnet.ts.net:3100"
-              value={tailnetBaseUrl}
-              onChange={(e) => {
-                setTailnetBaseUrl(e.target.value);
-                localStorage.setItem("paperclip_tailnet_base_url", e.target.value);
-              }}
+          <div className="flex items-center gap-3">
+            <ToggleField
+              label="External agent"
+              hint="Use an external URL (e.g. Tailscale) instead of localhost for remote agents."
+              checked={externalInvite}
+              onChange={setExternalInvite}
+              toggleTestId="company-settings-invites-external-toggle"
             />
           </div>
+          {externalInvite && (
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">
+                External base URL
+              </label>
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                placeholder="https://hostname.tailnet.ts.net:3100"
+                value={tailnetBaseUrl}
+                onChange={(e) => {
+                  setTailnetBaseUrl(e.target.value);
+                  localStorage.setItem("paperclip_tailnet_base_url", e.target.value);
+                }}
+              />
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <Button
               data-testid="company-settings-invites-generate-button"
               size="sm"
               onClick={() => inviteMutation.mutate()}
-              disabled={inviteMutation.isPending || tailnetInviteMutation.isPending}
+              disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
                 ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
-            </Button>
-            <Button
-              data-testid="company-settings-invites-generate-tailnet-button"
-              size="sm"
-              variant="outline"
-              onClick={() => tailnetInviteMutation.mutate()}
-              disabled={inviteMutation.isPending || tailnetInviteMutation.isPending}
-            >
-              {tailnetInviteMutation.isPending
-                ? "Generating..."
-                : "🌐 Generate Tailnet Invite"}
+                : "Generate Minion Invite Prompt"}
             </Button>
           </div>
           {inviteError && (
@@ -481,7 +477,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  Minion Invite Prompt
                 </div>
                 {snippetCopied && (
                   <span
@@ -635,7 +631,7 @@ Then verify with: curl -fsS <base-url>/api/health`;
     ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
 
-  return `You're invited to join a Paperclip organization.
+  return `You're invited to join a Paperclip organization as a Minion gateway agent.
 
 The URLs you should try are:
 ${candidateList}
@@ -646,17 +642,16 @@ Verify the hostname works from your runtime with: GET <base-url>/api/health
 
 ${connectivityBlock}
 
-For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
+For your "agentName", just use your own agent name and send it directly.
 You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
 
 ---
 
-This onboarding flow is for OpenClaw Gateway.
+This onboarding flow is for the Minion Gateway adapter.
 When you submit the join request, use:
 - \`adapterType: "openclaw_gateway"\`
 - \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
 - \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
-- (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
 - Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, Paperclip will generate and persist one during join so pairing approvals remain stable.
 - Only use \`disableDeviceAuth=true\` for special environments where pairing cannot be completed.
 
