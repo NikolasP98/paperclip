@@ -13,6 +13,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import {
+  type GatewayDeviceIdentity,
+  buildDeviceAuthPayloadV2,
+  buildDeviceAuthPayloadV3,
+  resolveDeviceIdentity,
+  signDevicePayload,
+} from "../shared/device-auth.js";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
 
@@ -27,13 +34,6 @@ type WakePayload = {
   approvalId: string | null;
   approvalStatus: string | null;
   issueIds: string[];
-};
-
-type GatewayDeviceIdentity = {
-  deviceId: string;
-  publicKeyRawBase64Url: string;
-  privateKeyPem: string;
-  source: "configured" | "ephemeral";
 };
 
 type GatewayRequestFrame = {
@@ -94,8 +94,6 @@ const DEFAULT_ROLE = "operator";
 
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
-
-const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -346,6 +344,13 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
   }
+
+  // Inject API key if available (avoids requiring the agent to read
+  // a file at runtime — cloud/gateway agents often can't access local files).
+  const agentApiKey = nonEmpty(ctx.authToken) ?? nonEmpty(ctx.config.paperclipApiKey);
+  if (agentApiKey) {
+    paperclipEnv.PAPERCLIP_API_KEY = agentApiKey;
+  }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
   if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
@@ -369,6 +374,7 @@ function buildWakeText(
     "PAPERCLIP_AGENT_ID",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_API_URL",
+    "PAPERCLIP_API_KEY",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
@@ -386,6 +392,7 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const hasApiKey = Boolean(paperclipEnv.PAPERCLIP_API_KEY);
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -394,9 +401,13 @@ function buildWakeText(
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-    "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    ...(hasApiKey
+      ? []
+      : [
+          `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+          "",
+          `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+        ]),
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -549,86 +560,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
         reject(err);
       });
   });
-}
-
-function derivePublicKeyRaw(publicKeyPem: string): Buffer {
-  const key = crypto.createPublicKey(publicKeyPem);
-  const spki = key.export({ type: "spki", format: "der" }) as Buffer;
-  if (
-    spki.length === ED25519_SPKI_PREFIX.length + 32 &&
-    spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)
-  ) {
-    return spki.subarray(ED25519_SPKI_PREFIX.length);
-  }
-  return spki;
-}
-
-function base64UrlEncode(buf: Buffer): string {
-  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-}
-
-function signDevicePayload(privateKeyPem: string, payload: string): string {
-  const key = crypto.createPrivateKey(privateKeyPem);
-  const sig = crypto.sign(null, Buffer.from(payload, "utf8"), key);
-  return base64UrlEncode(sig);
-}
-
-function buildDeviceAuthPayloadV3(params: {
-  deviceId: string;
-  clientId: string;
-  clientMode: string;
-  role: string;
-  scopes: string[];
-  signedAtMs: number;
-  token?: string | null;
-  nonce: string;
-  platform?: string | null;
-  deviceFamily?: string | null;
-}): string {
-  const scopes = params.scopes.join(",");
-  const token = params.token ?? "";
-  const platform = params.platform?.trim() ?? "";
-  const deviceFamily = params.deviceFamily?.trim() ?? "";
-  return [
-    "v3",
-    params.deviceId,
-    params.clientId,
-    params.clientMode,
-    params.role,
-    scopes,
-    String(params.signedAtMs),
-    token,
-    params.nonce,
-    platform,
-    deviceFamily,
-  ].join("|");
-}
-
-function resolveDeviceIdentity(config: Record<string, unknown>): GatewayDeviceIdentity {
-  const configuredPrivateKey = nonEmpty(config.devicePrivateKeyPem);
-  if (configuredPrivateKey) {
-    const privateKey = crypto.createPrivateKey(configuredPrivateKey);
-    const publicKey = crypto.createPublicKey(privateKey);
-    const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-    const raw = derivePublicKeyRaw(publicKeyPem);
-    return {
-      deviceId: crypto.createHash("sha256").update(raw).digest("hex"),
-      publicKeyRawBase64Url: base64UrlEncode(raw),
-      privateKeyPem: configuredPrivateKey,
-      source: "configured",
-    };
-  }
-
-  const generated = crypto.generateKeyPairSync("ed25519");
-  const publicKeyPem = generated.publicKey.export({ type: "spki", format: "pem" }).toString();
-  const privateKeyPem = generated.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const raw = derivePublicKeyRaw(publicKeyPem);
-  return {
-    deviceId: crypto.createHash("sha256").update(raw).digest("hex"),
-    publicKeyRawBase64Url: base64UrlEncode(raw),
-    privateKeyPem,
-    source: "ephemeral",
-  };
 }
 
 function isResponseFrame(value: unknown): value is GatewayResponseFrame {
@@ -1278,7 +1209,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
 
         if (deviceIdentity) {
-          const payload = buildDeviceAuthPayloadV3({
+          // Use v2 payload for broad gateway compatibility; v3 adds
+          // platform/deviceFamily that older gateways reject.
+          // Newer gateways accept v2 via their legacy-signature fallback.
+          const payload = buildDeviceAuthPayloadV2({
             deviceId: deviceIdentity.deviceId,
             clientId,
             clientMode,
@@ -1287,8 +1221,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             signedAtMs,
             token: authToken,
             nonce,
-            platform: process.platform,
-            deviceFamily,
           });
           connectParams.device = {
             id: deviceIdentity.deviceId,

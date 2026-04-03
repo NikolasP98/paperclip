@@ -1,7 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -23,8 +21,6 @@ type AgentSnippetInput = {
   connectionCandidates?: string[] | null;
   testResolutionUrl?: string | null;
 };
-
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function CompanySettings() {
   const {
@@ -56,6 +52,9 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+  const [tailnetBaseUrl, setTailnetBaseUrl] = useState(() =>
+    localStorage.getItem("paperclip_tailnet_base_url") ?? ""
+  );
 
   const generalDirty =
     !!selectedCompany &&
@@ -84,72 +83,78 @@ export function CompanySettings() {
     }
   });
 
-  const feedbackSharingMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      companiesApi.update(selectedCompanyId!, {
-        feedbackDataSharingEnabled: enabled,
-      }),
-    onSuccess: (_company, enabled) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
-        tone: "success",
+  const handleInviteSuccess = async (invite: Awaited<ReturnType<typeof accessApi.createOpenClawInvitePrompt>>, baseOverride?: string) => {
+    setInviteError(null);
+    const base = (baseOverride ?? window.location.origin).replace(/\/+$/, "");
+    const onboardingPath =
+      invite.onboardingTextPath ??
+      `/api/invites/${invite.token}/onboarding.txt`;
+    // When a base override is provided (e.g. Tailnet URL), always
+    // construct the URL from that base + the path, ignoring any
+    // absolute URL the server returned (which uses the local origin).
+    const absoluteUrl = baseOverride
+      ? `${base}${onboardingPath}`
+      : (invite.onboardingTextUrl ?? `${base}${onboardingPath}`);
+    setSnippetCopied(false);
+    setSnippetCopyDelightId(0);
+    let snippet: string;
+    try {
+      const manifest = await accessApi.getInviteOnboarding(invite.token);
+      const candidates =
+        manifest.onboarding.connectivity?.connectionCandidates ?? [];
+      // If a base override was provided (e.g. Tailnet), ensure it's
+      // included as a connection candidate with the onboarding path.
+      const extraCandidates = baseOverride
+        ? [base, ...candidates]
+        : candidates;
+      snippet = buildAgentSnippet({
+        onboardingTextUrl: absoluteUrl,
+        connectionCandidates: extraCandidates,
+        testResolutionUrl:
+          manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
+          null
       });
-    },
-    onError: (err) => {
-      pushToast({
-        title: "Failed to update feedback sharing",
-        body: err instanceof Error ? err.message : "Unknown error",
-        tone: "error",
+    } catch {
+      snippet = buildAgentSnippet({
+        onboardingTextUrl: absoluteUrl,
+        connectionCandidates: baseOverride ? [base] : null,
+        testResolutionUrl: null
       });
-    },
-  });
+    }
+    setInviteSnippet(snippet);
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setSnippetCopied(true);
+      setSnippetCopyDelightId((prev) => prev + 1);
+      setTimeout(() => setSnippetCopied(false), 2000);
+    } catch {
+      /* clipboard may not be available */
+    }
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
+    });
+  };
 
   const inviteMutation = useMutation({
     mutationFn: () =>
       accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
-    onSuccess: async (invite) => {
-      setInviteError(null);
-      const base = window.location.origin.replace(/\/+$/, "");
-      const onboardingTextLink =
-        invite.onboardingTextUrl ??
-        invite.onboardingTextPath ??
-        `/api/invites/${invite.token}/onboarding.txt`;
-      const absoluteUrl = onboardingTextLink.startsWith("http")
-        ? onboardingTextLink
-        : `${base}${onboardingTextLink}`;
-      setSnippetCopied(false);
-      setSnippetCopyDelightId(0);
-      let snippet: string;
-      try {
-        const manifest = await accessApi.getInviteOnboarding(invite.token);
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates:
-            manifest.onboarding.connectivity?.connectionCandidates ?? null,
-          testResolutionUrl:
-            manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
-        });
-      } catch {
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates: null,
-          testResolutionUrl: null
-        });
-      }
-      setInviteSnippet(snippet);
-      try {
-        await navigator.clipboard.writeText(snippet);
-        setSnippetCopied(true);
-        setSnippetCopyDelightId((prev) => prev + 1);
-        setTimeout(() => setSnippetCopied(false), 2000);
-      } catch {
-        /* clipboard may not be available */
-      }
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
-      });
+    onSuccess: (invite) => handleInviteSuccess(invite),
+    onError: (err) => {
+      setInviteError(
+        err instanceof Error ? err.message : "Failed to create invite"
+      );
+    }
+  });
+
+  const tailnetInviteMutation = useMutation({
+    mutationFn: () => {
+      const url = tailnetBaseUrl.trim();
+      if (!url) throw new Error("Set a Tailnet base URL first (e.g. https://hostname.tailnet.ts.net:3100).");
+      return accessApi.createOpenClawInvitePrompt(selectedCompanyId!);
+    },
+    onSuccess: (invite) => {
+      const url = tailnetBaseUrl.trim().replace(/\/+$/, "");
+      handleInviteSuccess(invite, url);
     },
     onError: (err) => {
       setInviteError(
@@ -417,48 +422,6 @@ export function CompanySettings() {
         </div>
       </div>
 
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Feedback Sharing
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
-            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
-            checked={!!selectedCompany.feedbackDataSharingEnabled}
-            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
-          />
-          <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
-          </p>
-          <div className="space-y-1 text-xs text-muted-foreground">
-            <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
-            </div>
-            {selectedCompany.feedbackDataSharingConsentAt ? (
-              <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
-                {selectedCompany.feedbackDataSharingConsentByUserId
-                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
-                  : ""}
-              </div>
-            ) : (
-              <div>Sharing is currently disabled.</div>
-            )}
-            {FEEDBACK_TERMS_URL ? (
-              <a
-                href={FEEDBACK_TERMS_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -471,16 +434,41 @@ export function CompanySettings() {
             </span>
             <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
           </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">
+              Tailnet base URL
+            </label>
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+              placeholder="https://hostname.tailnet.ts.net:3100"
+              value={tailnetBaseUrl}
+              onChange={(e) => {
+                setTailnetBaseUrl(e.target.value);
+                localStorage.setItem("paperclip_tailnet_base_url", e.target.value);
+              }}
+            />
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               data-testid="company-settings-invites-generate-button"
               size="sm"
               onClick={() => inviteMutation.mutate()}
-              disabled={inviteMutation.isPending}
+              disabled={inviteMutation.isPending || tailnetInviteMutation.isPending}
             >
               {inviteMutation.isPending
                 ? "Generating..."
                 : "Generate OpenClaw Invite Prompt"}
+            </Button>
+            <Button
+              data-testid="company-settings-invites-generate-tailnet-button"
+              size="sm"
+              variant="outline"
+              onClick={() => tailnetInviteMutation.mutate()}
+              disabled={inviteMutation.isPending || tailnetInviteMutation.isPending}
+            >
+              {tailnetInviteMutation.isPending
+                ? "Generating..."
+                : "🌐 Generate Tailnet Invite"}
             </Button>
           </div>
           {inviteError && (
@@ -549,16 +537,16 @@ export function CompanySettings() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <Link to="/company/export">
+              <a href="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Export
-              </Link>
+              </a>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <Link to="/company/import">
+              <a href="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
-              </Link>
+              </a>
             </Button>
           </div>
         </div>
