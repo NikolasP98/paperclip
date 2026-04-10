@@ -7,7 +7,8 @@ const shared = {
   platform: "node",
   target: "node22",
   format: "esm",
-  external: ["@paperclipai/plugin-sdk", "@paperclipai/shared"],
+  // Bundle SDK for standalone deployment outside the monorepo
+  external: [],
   sourcemap: true,
 };
 
