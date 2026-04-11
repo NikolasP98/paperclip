@@ -26,4 +26,31 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
-exec gosu node "$@"
+# Always fix npm cache ownership (global installs run as root during build)
+chown -R node:node /paperclip/.npm 2>/dev/null || true
+
+# Inject secrets from Infisical via machine identity token
+if [ -n "$INFISICAL_CLIENT_ID" ] && [ -n "$INFISICAL_CLIENT_SECRET" ]; then
+    echo "Authenticating with Infisical..."
+    INFISICAL_TOKEN=$(curl -s "${INFISICAL_API_URL}/v1/auth/universal-auth/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"clientId\": \"${INFISICAL_CLIENT_ID}\", \"clientSecret\": \"${INFISICAL_CLIENT_SECRET}\"}" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['accessToken'])" 2>/dev/null)
+
+    if [ -n "$INFISICAL_TOKEN" ]; then
+        echo "Loading secrets from Infisical..."
+        export INFISICAL_TOKEN
+        exec gosu node infisical run \
+            --token "$INFISICAL_TOKEN" \
+            --projectId "$INFISICAL_PROJECT_ID" \
+            --env "${INFISICAL_ENV:-dev}" \
+            --domain "$INFISICAL_API_URL" \
+            --silent \
+            -- "$@"
+    else
+        echo "WARNING: Infisical auth failed, starting without secrets injection"
+        exec gosu node "$@"
+    fi
+else
+    exec gosu node "$@"
+fi
