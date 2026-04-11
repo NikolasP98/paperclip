@@ -17,8 +17,8 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET requests and API calls
-  if (request.method !== "GET" || url.pathname.startsWith("/api")) {
+  // Skip non-GET requests, API calls, and hashed assets (immutable by content hash)
+  if (request.method !== "GET" || url.pathname.startsWith("/api") || url.pathname.startsWith("/assets/")) {
     return;
   }
 

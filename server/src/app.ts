@@ -1,3 +1,4 @@
+import compression from "compression";
 import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
@@ -89,6 +90,7 @@ export async function createApp(
 ) {
   const app = express();
 
+  app.use(compression());
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
@@ -260,7 +262,7 @@ export async function createApp(
     if (uiDist) {
       const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
       app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
+      app.get(/^\/(?!assets\/).*/, (_req, res) => {
         res.status(200).set("Content-Type", "text/html").end(indexHtml);
       });
     } else {
