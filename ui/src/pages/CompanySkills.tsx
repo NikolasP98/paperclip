@@ -919,7 +919,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the MINION workspace.`,
       });
     },
     onError: (error) => {
