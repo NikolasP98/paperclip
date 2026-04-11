@@ -42,6 +42,12 @@ Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
+Hire notification fields (used by onHireApproved hook):
+- notificationChannel (string, optional): channel id for onboarding message (e.g. "whatsapp", "telegram")
+- notificationTo (string, optional): channel target address (e.g. "+1234567890", "telegram:user:12345")
+- agentSessionKey (string, optional): gateway session key to route onboarding via chat.send instead of send
+- paperclipApiKey (string, optional): agent API key injected after hire claim
+
 Standard outbound payload additions:
 - paperclip (object): standardized Paperclip context added to every gateway agent request
 - paperclip.workspace (object, optional): resolved execution workspace for this run
