@@ -1742,6 +1742,40 @@ export function agentRoutes(
     res.status(201).json(agent);
   });
 
+  router.patch("/agents/:id/active-adapter", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const rawIndex = (req.body as { activeAdapterIndex?: unknown })?.activeAdapterIndex;
+    if (typeof rawIndex !== "number" || !Number.isInteger(rawIndex) || rawIndex < 0) {
+      res.status(400).json({ error: "activeAdapterIndex must be a non-negative integer" });
+      return;
+    }
+
+    const fallbackChain =
+      ((existing.adapterConfig as { fallbackChain?: unknown[] } | null)?.fallbackChain ?? []) as unknown[];
+    // Effective chain = primary (index 0) + N fallback levels => max valid index is N
+    const maxIndex = fallbackChain.length;
+    if (rawIndex > maxIndex) {
+      res.status(400).json({
+        error: `activeAdapterIndex ${rawIndex} out of range; max is ${maxIndex}`,
+      });
+      return;
+    }
+
+    await db
+      .update(agentsTable)
+      .set({ activeAdapterIndex: rawIndex, updatedAt: new Date() })
+      .where(eq(agentsTable.id, id));
+
+    res.json({ ok: true, activeAdapterIndex: rawIndex });
+  });
+
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
