@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
+import { AdapterChainBadge, type ChainLevel } from "../components/AdapterChainBadge.js";
+import { RevertAdapterMenu } from "../components/RevertAdapterMenu.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -2801,7 +2803,32 @@ function AgentSkillsTab({
             <div className="grid gap-2 text-sm sm:grid-cols-2">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
                 <span className="text-muted-foreground">Adapter</span>
-                <span className="font-medium">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
+                <span className="font-medium flex items-center gap-2">
+                  {(() => {
+                    const fallbackChain = (agent.adapterConfig as { fallbackChain?: Array<{ type: string; model?: string }> } | null)?.fallbackChain ?? [];
+                    const activeIndex = (agent as unknown as { activeAdapterIndex?: number }).activeAdapterIndex ?? 0;
+                    const chainLength = fallbackChain.length + 1;
+                    if (chainLength === 1) {
+                      return adapterLabels[agent.adapterType] ?? agent.adapterType;
+                    }
+                    return (
+                      <>
+                        <AdapterChainBadge
+                          chain={[
+                            { type: agent.adapterType },
+                            ...fallbackChain.map((entry) => ({ type: entry.type, model: entry.model })),
+                          ]}
+                          activeLevel={activeIndex}
+                        />
+                        <RevertAdapterMenu
+                          agentId={agent.id}
+                          chainLength={chainLength}
+                          activeIndex={activeIndex}
+                        />
+                      </>
+                    );
+                  })()}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
                 <span className="text-muted-foreground">Skills applied</span>
@@ -2848,6 +2875,22 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         <span className="font-mono text-xs text-muted-foreground">
           {run.id.slice(0, 8)}
         </span>
+        {(() => {
+          const fbLevel = (run as unknown as { fallbackLevel?: number | null }).fallbackLevel;
+          const fbFrom = (run as unknown as { fallbackFromAdapter?: string | null }).fallbackFromAdapter;
+          if (fbLevel != null && fbLevel > 0) {
+            return (
+              <span
+                title={`Fallback from ${fbFrom ?? "primary"} (level ${fbLevel})`}
+                className="text-xs text-muted-foreground shrink-0"
+                aria-label="fallback run"
+              >
+                ↩
+              </span>
+            );
+          }
+          return null;
+        })()}
         <span className={cn(
           "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
           run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
@@ -3154,13 +3197,38 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </Button>
               )}
             </div>
-            {/* Adapter type · provider · model */}
+            {/* Adapter type · provider · model (with fallback chain visualization when applicable) */}
             {(() => {
               const displayProvider = metrics.provider
                 ?? asNonEmptyString(adapterConfig?.provider);
               const displayModel = metrics.model
                 ?? asNonEmptyString(adapterConfig?.model);
               if (!adapterType && !displayProvider && !displayModel) return null;
+              // Fallback metadata may not yet exist on older runs — read defensively.
+              const runRecord = run as unknown as {
+                fallbackLevel?: number | null;
+                fallbackFromAdapter?: string | null;
+                fallbackReason?: string | null;
+              };
+              const fallbackLevel = runRecord.fallbackLevel ?? null;
+              if (fallbackLevel != null && fallbackLevel > 0) {
+                const fallbackChain = (adapterConfig?.fallbackChain as Array<{ type: string; model?: string }> | undefined) ?? [];
+                const chain: ChainLevel[] = [
+                  { type: runRecord.fallbackFromAdapter ?? adapterType, model: undefined },
+                  ...fallbackChain.map((entry) => ({ type: entry.type, model: entry.model })),
+                ];
+                const modelLabel = displayProvider && displayModel
+                  ? `${displayProvider}/${displayModel}`
+                  : (displayModel ?? undefined);
+                return (
+                  <AdapterChainBadge
+                    chain={chain}
+                    activeLevel={fallbackLevel}
+                    modelLabel={modelLabel}
+                    fallbackReason={runRecord.fallbackReason ?? null}
+                  />
+                );
+              }
               return (
                 <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
                   {adapterType && (

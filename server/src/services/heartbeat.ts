@@ -62,6 +62,13 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  resolveEffectiveChain,
+  shouldAdvanceChain,
+  classifyFallbackReason,
+  parseQuotaResetAt,
+  type AdapterChainEntry,
+} from "./fallback-chain.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -3155,34 +3162,88 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
-      const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
-        : null;
-      if (adapter.supportsLocalAgentJwt && !authToken) {
-        logger.warn(
-          {
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-            adapterType: agent.adapterType,
+      const primaryEntry: AdapterChainEntry = {
+        type: agent.adapterType,
+        ...((agent.adapterConfig as Record<string, unknown>) ?? {}),
+      };
+      const fallbackChainConfig =
+        (agent.adapterConfig as { fallbackChain?: AdapterChainEntry[] } | null)?.fallbackChain ?? [];
+      const effectiveChain = resolveEffectiveChain(primaryEntry, fallbackChainConfig);
+      let activeIndex = Math.min(agent.activeAdapterIndex ?? 0, effectiveChain.length - 1);
+      let adapterResult: AdapterExecutionResult | undefined;
+
+      while (activeIndex < effectiveChain.length) {
+        const entry = effectiveChain[activeIndex];
+        const adapter = getServerAdapter(entry.type);
+        const authToken = adapter.supportsLocalAgentJwt
+          ? createLocalAgentJwt(agent.id, agent.companyId, entry.type, run.id)
+          : null;
+        if (adapter.supportsLocalAgentJwt && !authToken) {
+          logger.warn(
+            { companyId: agent.companyId, agentId: agent.id, runId: run.id, adapterType: entry.type },
+            "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+          );
+        }
+        const levelRuntimeConfig = { ...runtimeConfig, ...entry };
+
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: levelRuntimeConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, meta);
           },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
-        );
+          authToken: authToken ?? undefined,
+        });
+
+        // Annotate fallback metadata if we're past level 0
+        if (activeIndex > 0) {
+          adapterResult.fallbackFromAdapter = effectiveChain[0].type;
+          adapterResult.fallbackLevel = activeIndex;
+          adapterResult.fallbackReason = adapterResult.fallbackReason ?? "previous_level_failed";
+        }
+
+        if (shouldAdvanceChain(adapterResult, entry)) {
+          // Persist sticky state + reset timestamp before advancing
+          const resetAt = adapterResult.errorMessage
+            ? parseQuotaResetAt(adapterResult.errorMessage)
+            : null;
+          const reason = classifyFallbackReason(adapterResult, entry);
+          await db
+            .update(agents)
+            .set({ activeAdapterIndex: activeIndex + 1, updatedAt: new Date() })
+            .where(eq(agents.id, agent.id));
+          await db
+            .update(heartbeatRuns)
+            .set({
+              fallbackFromAdapter: effectiveChain[0].type,
+              fallbackReason: reason,
+              fallbackLevel: activeIndex,
+              quotaResetAt: resetAt,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, run.id));
+
+          await onLog(
+            "stderr",
+            `[paperclip] Fallback advancing: level ${activeIndex} (${entry.type}) → level ${activeIndex + 1} (reason=${reason ?? "unknown"})\n`,
+          );
+
+          activeIndex += 1;
+          continue;
+        }
+
+        // Either succeeded or failed without triggering chain advance.
+        break;
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
-        },
-        authToken: authToken ?? undefined,
-      });
+
+      if (!adapterResult) {
+        throw new Error("Fallback chain exhausted without producing a result; effectiveChain may be empty");
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,

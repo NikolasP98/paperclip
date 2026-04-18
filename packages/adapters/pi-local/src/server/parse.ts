@@ -226,3 +226,19 @@ export function isPiUnknownSessionError(stdout: string, stderr: string): boolean
 
   return /unknown\s+session|session\s+not\s+found|session\s+.*\s+not\s+found|no\s+session/i.test(haystack);
 }
+
+const OR_CREDIT_LIMIT_PATTERNS: readonly RegExp[] = [
+  /\b402\b.*credit/i,
+  /credit limit (?:reached|exceeded)/i,
+  /you have exceeded your credit limit/i,
+  /openrouter.*402/i,
+];
+
+/**
+ * Detect OpenRouter HTTP 402 / credit-limit-reached errors in pi's stdout/stderr.
+ * Used by the orchestrator's fallback-chain dispatch to advance to the next level.
+ */
+export function isPiOpenRouterCreditLimitError(stdout: string, stderr: string): boolean {
+  const haystack = `${stderr}\n${stdout}`;
+  return OR_CREDIT_LIMIT_PATTERNS.some((pattern) => pattern.test(haystack));
+}

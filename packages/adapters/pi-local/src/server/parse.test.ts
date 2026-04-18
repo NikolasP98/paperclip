@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
+import { parsePiJsonl, isPiUnknownSessionError, isPiOpenRouterCreditLimitError } from "./parse.js";
+
+describe("isPiOpenRouterCreditLimitError", () => {
+  it("returns true for an OR 402 credit-limit message in stderr", () => {
+    const stderr = `Error from OpenRouter: 402 - {"error":{"message":"You have exceeded your credit limit","code":402}}`;
+    expect(isPiOpenRouterCreditLimitError("", stderr)).toBe(true);
+  });
+
+  it("returns true when message text includes 'credit limit reached'", () => {
+    const stderr = "openrouter: credit limit reached for key";
+    expect(isPiOpenRouterCreditLimitError("", stderr)).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(isPiOpenRouterCreditLimitError("", "Some other error")).toBe(false);
+    expect(isPiOpenRouterCreditLimitError("", "")).toBe(false);
+  });
+
+  it("checks stdout JSONL error entries too", () => {
+    const stdout = JSON.stringify({ type: "error", error: { code: 402, message: "credit limit reached" } });
+    expect(isPiOpenRouterCreditLimitError(stdout, "")).toBe(true);
+  });
+});
 
 describe("parsePiJsonl", () => {
   it("parses agent lifecycle and messages", () => {
