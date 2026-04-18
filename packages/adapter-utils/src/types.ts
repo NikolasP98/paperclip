@@ -99,6 +99,12 @@ export interface AdapterExecutionResult {
       description?: string;
     }>;
   } | null;
+  /** Set by the orchestrator when this run was dispatched as a fallback. */
+  fallbackFromAdapter?: string | null;
+  /** Stable reason classifier — e.g. "quota_exhausted", "credit_cap_hit". */
+  fallbackReason?: string | null;
+  /** 0 = primary adapter, 1+ = position in the fallback chain. */
+  fallbackLevel?: number | null;
 }
 
 export interface AdapterSessionCodec {
