@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
+import { AdapterChainBadge, type ChainLevel } from "../components/AdapterChainBadge.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -3205,13 +3206,38 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </Button>
               )}
             </div>
-            {/* Adapter type · provider · model */}
+            {/* Adapter type · provider · model (with fallback chain visualization when applicable) */}
             {(() => {
               const displayProvider = metrics.provider
                 ?? asNonEmptyString(adapterConfig?.provider);
               const displayModel = metrics.model
                 ?? asNonEmptyString(adapterConfig?.model);
               if (!adapterType && !displayProvider && !displayModel) return null;
+              // Fallback metadata may not yet exist on older runs — read defensively.
+              const runRecord = run as unknown as {
+                fallbackLevel?: number | null;
+                fallbackFromAdapter?: string | null;
+                fallbackReason?: string | null;
+              };
+              const fallbackLevel = runRecord.fallbackLevel ?? null;
+              if (fallbackLevel != null && fallbackLevel > 0) {
+                const fallbackChain = (adapterConfig?.fallbackChain as Array<{ type: string; model?: string }> | undefined) ?? [];
+                const chain: ChainLevel[] = [
+                  { type: runRecord.fallbackFromAdapter ?? adapterType, model: undefined },
+                  ...fallbackChain.map((entry) => ({ type: entry.type, model: entry.model })),
+                ];
+                const modelLabel = displayProvider && displayModel
+                  ? `${displayProvider}/${displayModel}`
+                  : (displayModel ?? undefined);
+                return (
+                  <AdapterChainBadge
+                    chain={chain}
+                    activeLevel={fallbackLevel}
+                    modelLabel={modelLabel}
+                    fallbackReason={runRecord.fallbackReason ?? null}
+                  />
+                );
+              }
               return (
                 <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
                   {adapterType && (
