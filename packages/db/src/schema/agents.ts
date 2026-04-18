@@ -25,6 +25,7 @@ export const agents = pgTable(
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
+    activeAdapterIndex: integer("active_adapter_index").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     pauseReason: text("pause_reason"),
