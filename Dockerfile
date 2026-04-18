@@ -55,7 +55,8 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @mariozechner/pi-ai@latest \
+  && ln -s "$(which pi-ai)" /usr/local/bin/pi \
   && mkdir -p /paperclip \
   && chown -R node:node /paperclip
 
