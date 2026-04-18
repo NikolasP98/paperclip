@@ -25,6 +25,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { applyEnvAlias } from "./env-alias.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
@@ -185,11 +186,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   try {
-    const runtimeEnv = Object.fromEntries(
+    const baseRuntimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    const envAliasFromConfig =
+      config.envAlias && typeof config.envAlias === "object"
+        ? (config.envAlias as Record<string, string>)
+        : undefined;
+    const runtimeEnv = applyEnvAlias(baseRuntimeEnv, envAliasFromConfig);
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
     const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {

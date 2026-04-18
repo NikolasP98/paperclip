@@ -56,7 +56,7 @@ ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @mariozechner/pi-coding-agent@latest \
-  && mkdir -p /paperclip/.pi/agent/sessions /paperclip/.pi/agent/skills /paperclip/.pi/paperclips \
+  && mkdir -p /paperclip/.pi/agent/sessions /paperclip/.pi/agent/skills /paperclip/.pi/paperclips /paperclip/.cache/opencode \
   && chown -R node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
