@@ -41,6 +41,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
+import { applyEnvAlias } from "./env-alias.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -271,11 +272,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       mergedEnv[pathKey] = [...additions, basePath].filter(Boolean).join(path.delimiter);
     }
   }
-  const runtimeEnv = Object.fromEntries(
+  const baseRuntimeEnv = Object.fromEntries(
     Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const envAliasFromConfig =
+    config.envAlias && typeof config.envAlias === "object"
+      ? (config.envAlias as Record<string, string>)
+      : undefined;
+  const runtimeEnv = applyEnvAlias(baseRuntimeEnv, envAliasFromConfig);
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
