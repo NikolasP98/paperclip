@@ -29,7 +29,7 @@ export function resolveEffectiveChain(
  * Returns false for non-fallback-triggering errors (timeouts, panics, etc.).
  */
 export function shouldAdvanceChain(
-  result: Pick<AdapterExecutionResult, "errorMessage" | "errorCode" | "timedOut">,
+  result: Partial<Pick<AdapterExecutionResult, "errorMessage" | "errorCode" | "timedOut">>,
   adapter: AdapterChainEntry,
 ): boolean {
   if (result.timedOut) return false;
@@ -46,7 +46,7 @@ export function shouldAdvanceChain(
  * Map a triggering result to a stable reason string for persistence + UI.
  */
 export function classifyFallbackReason(
-  result: Pick<AdapterExecutionResult, "errorMessage" | "errorCode">,
+  result: Partial<Pick<AdapterExecutionResult, "errorMessage" | "errorCode">>,
   adapter: AdapterChainEntry,
 ): "quota_exhausted" | "credit_cap_hit" | null {
   if (
