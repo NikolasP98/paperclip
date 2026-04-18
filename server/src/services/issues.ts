@@ -2670,6 +2670,18 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        // Fallback-chain stickiness reset: when an issue reaches a terminal
+        // status, the assignee agent should re-attempt its primary adapter on
+        // the next heartbeat instead of remaining stuck on a fallback level.
+        if (
+          (updated.status === "done" || updated.status === "cancelled") &&
+          updated.assigneeAgentId
+        ) {
+          await tx
+            .update(agents)
+            .set({ activeAdapterIndex: 0, updatedAt: new Date() })
+            .where(and(eq(agents.id, updated.assigneeAgentId), gt(agents.activeAdapterIndex, 0)));
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
