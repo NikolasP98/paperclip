@@ -2925,6 +2925,22 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         <span className="font-mono text-xs text-muted-foreground">
           {run.id.slice(0, 8)}
         </span>
+        {(() => {
+          const fbLevel = (run as unknown as { fallbackLevel?: number | null }).fallbackLevel;
+          const fbFrom = (run as unknown as { fallbackFromAdapter?: string | null }).fallbackFromAdapter;
+          if (fbLevel != null && fbLevel > 0) {
+            return (
+              <span
+                title={`Fallback from ${fbFrom ?? "primary"} (level ${fbLevel})`}
+                className="text-xs text-muted-foreground shrink-0"
+                aria-label="fallback run"
+              >
+                ↩
+              </span>
+            );
+          }
+          return null;
+        })()}
         <span className={cn(
           "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
           run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
