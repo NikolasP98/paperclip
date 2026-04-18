@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { AdapterChainBadge, type ChainLevel } from "../components/AdapterChainBadge.js";
+import { RevertAdapterMenu } from "../components/RevertAdapterMenu.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -2802,7 +2803,32 @@ function AgentSkillsTab({
             <div className="grid gap-2 text-sm sm:grid-cols-2">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
                 <span className="text-muted-foreground">Adapter</span>
-                <span className="font-medium">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
+                <span className="font-medium flex items-center gap-2">
+                  {(() => {
+                    const fallbackChain = (agent.adapterConfig as { fallbackChain?: Array<{ type: string; model?: string }> } | null)?.fallbackChain ?? [];
+                    const activeIndex = (agent as unknown as { activeAdapterIndex?: number }).activeAdapterIndex ?? 0;
+                    const chainLength = fallbackChain.length + 1;
+                    if (chainLength === 1) {
+                      return adapterLabels[agent.adapterType] ?? agent.adapterType;
+                    }
+                    return (
+                      <>
+                        <AdapterChainBadge
+                          chain={[
+                            { type: agent.adapterType },
+                            ...fallbackChain.map((entry) => ({ type: entry.type, model: entry.model })),
+                          ]}
+                          activeLevel={activeIndex}
+                        />
+                        <RevertAdapterMenu
+                          agentId={agent.id}
+                          chainLength={chainLength}
+                          activeIndex={activeIndex}
+                        />
+                      </>
+                    );
+                  })()}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
                 <span className="text-muted-foreground">Skills applied</span>
