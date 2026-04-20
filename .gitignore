@@ -54,3 +54,6 @@ tests/release-smoke/playwright-report/
 
 .infisical.json
 infisical-dev.sh
+
+# Serena MCP server workspace cache (per-user, not committed)
+.serena/
