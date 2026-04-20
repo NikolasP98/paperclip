@@ -18,7 +18,7 @@ import {
 } from "./constants.js";
 import { verifySignature, postComment, closeIssue, getIssue, getIssueComments } from "./github.js";
 import { parseVersions } from "./version-parser.js";
-import { buildInvestigationPrompt, buildFollowUpPrompt } from "./prompt.js";
+import { buildInvestigationPrompt, buildFollowUpPrompt, buildPrReviewPrompt } from "./prompt.js";
 
 async function getConfig(ctx: PluginContext): Promise<PluginConfig> {
   const raw = await ctx.config.get();
@@ -144,6 +144,11 @@ async function handleComment(ctx: PluginContext, config: PluginConfig, payload: 
   const { owner, repo } = splitRepo(repoData.full_name as string);
   const number = issue.number as number;
 
+  if (issue.pull_request) {
+    await handlePrComment(ctx, config, payload);
+    return;
+  }
+
   const link = await getGhLink(ctx, owner, repo, number);
 
   if (!link || !link.paperclipIssueId) {
@@ -159,6 +164,31 @@ async function handleComment(ctx: PluginContext, config: PluginConfig, payload: 
   });
   const result = await ctx.agents.invoke(config.defaultAgentId, config.companyId, { prompt, reason: "github-comment-mention" });
   ctx.logger.info("Agent re-invoked via comment", { number, runId: result.runId });
+}
+
+async function handlePrComment(ctx: PluginContext, config: PluginConfig, payload: Record<string, unknown>): Promise<void> {
+  const issue = payload.issue as Record<string, unknown>;
+  const comment = payload.comment as Record<string, unknown>;
+  const repoData = payload.repository as Record<string, unknown>;
+  const fullName = repoData.full_name as string;
+  const number = issue.number as number;
+  const pr = issue.pull_request as Record<string, unknown>;
+
+  const prompt = buildPrReviewPrompt({
+    repo: fullName,
+    number,
+    prUrl: issue.html_url as string,
+    prTitle: issue.title as string,
+    prAuthor: (issue.user as Record<string, unknown>).login as string,
+    prBody: (issue.body as string) ?? "",
+    diffUrl: (pr.diff_url as string) ?? `${issue.html_url}.diff`,
+    baseBranch: undefined,
+    commentAuthor: (comment.user as Record<string, unknown>).login as string,
+    commentBody: comment.body as string,
+  });
+
+  const result = await ctx.agents.invoke(config.defaultAgentId, config.companyId, { prompt, reason: "github-pr-review-mention" });
+  ctx.logger.info("Agent invoked for PR review", { repo: fullName, number, runId: result.runId });
 }
 
 let workerCtx: PluginContext | null = null;
