@@ -1,7 +1,7 @@
 import type { HireApprovedHookResult, HireApprovedPayload } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import {
-  GatewayWsClient,
+  createNodeGatewayClient,
   PROTOCOL_VERSION,
   nonEmpty,
   resolveAuthToken,
@@ -69,31 +69,29 @@ export async function onHireApproved(
 
   const message = buildOnboardingMessage(payload, adapterConfig);
 
-  const noopLog = async () => {};
-  const client = new GatewayWsClient({
+  const client = createNodeGatewayClient({
     url: parsedUrl.toString(),
     headers,
+    onChallenge: async () => ({
+      minProtocol: PROTOCOL_VERSION,
+      maxProtocol: PROTOCOL_VERSION,
+      client: {
+        id: "paperclip-hire-hook",
+        version: "paperclip",
+        platform: process.platform,
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.admin"],
+      auth: authToken ? { token: authToken } : undefined,
+    }),
     onEvent: () => {},
-    onLog: noopLog,
+    autoReconnect: false,
+    connectTimeoutMs: CONNECT_TIMEOUT_MS,
   });
 
   try {
-    await client.connect(
-      () => ({
-        minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
-        client: {
-          id: "paperclip-hire-hook",
-          version: "paperclip",
-          platform: process.platform,
-          mode: "backend",
-        },
-        role: "operator",
-        scopes: ["operator.admin"],
-        auth: authToken ? { token: authToken } : undefined,
-      }),
-      CONNECT_TIMEOUT_MS,
-    );
+    await client.connect();
 
     if (notificationTo) {
       await client.request(

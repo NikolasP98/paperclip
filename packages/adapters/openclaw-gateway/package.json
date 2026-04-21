@@ -50,6 +50,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@minion-stack/shared": "^0.3.0",
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1",
     "ws": "^8.19.0"

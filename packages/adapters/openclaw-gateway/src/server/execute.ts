@@ -22,7 +22,7 @@ import {
 import {
   type GatewayEventFrame,
   type GatewayResponseError,
-  GatewayWsClient,
+  createNodeGatewayClient,
   PROTOCOL_VERSION,
   asRecord,
   headerMapGetIgnoreCase,
@@ -463,11 +463,28 @@ async function autoApproveDevicePairing(params: {
   }
 
   const approvalScopes = uniqueScopes([...params.scopes, "operator.pairing"]);
-  const client = new GatewayWsClient({
+  const client = createNodeGatewayClient({
     url: params.url,
     headers: params.headers,
+    onChallenge: async () => ({
+      minProtocol: PROTOCOL_VERSION,
+      maxProtocol: PROTOCOL_VERSION,
+      client: {
+        id: params.clientId,
+        version: params.clientVersion,
+        platform: process.platform,
+        mode: params.clientMode,
+      },
+      role: params.role,
+      scopes: approvalScopes,
+      auth: {
+        ...(params.authToken ? { token: params.authToken } : {}),
+        ...(params.password ? { password: params.password } : {}),
+      },
+    }),
     onEvent: () => {},
-    onLog: params.onLog,
+    autoReconnect: false,
+    connectTimeoutMs: params.connectTimeoutMs,
   });
 
   try {
@@ -476,25 +493,7 @@ async function autoApproveDevicePairing(params: {
       "[openclaw-gateway] pairing required; attempting automatic pairing approval via gateway methods\n",
     );
 
-    await client.connect(
-      () => ({
-        minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
-        client: {
-          id: params.clientId,
-          version: params.clientVersion,
-          platform: process.platform,
-          mode: params.clientMode,
-        },
-        role: params.role,
-        scopes: approvalScopes,
-        auth: {
-          ...(params.authToken ? { token: params.authToken } : {}),
-          ...(params.password ? { password: params.password } : {}),
-        },
-      }),
-      params.connectTimeoutMs,
-    );
+    await client.connect();
 
     let requestId = params.requestId;
     if (!requestId) {
@@ -792,12 +791,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  let deviceIdentity: GatewayDeviceIdentity | null = null;
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
-    let deviceIdentity: GatewayDeviceIdentity | null = null;
 
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
@@ -847,27 +846,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const client = new GatewayWsClient({
+    deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
+
+    const client = createNodeGatewayClient({
       url: parsedUrl.toString(),
       headers,
-      onEvent,
-      onLog: ctx.onLog,
-    });
-
-    try {
-      deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
-      if (deviceIdentity) {
-        await ctx.onLog(
-          "stdout",
-          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
-        );
-      } else {
-        await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
-      }
-
-      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
-
-      const hello = await client.connect((nonce) => {
+      onChallenge: async (nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
           minProtocol: PROTOCOL_VERSION,
@@ -914,7 +898,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           };
         }
         return connectParams;
-      }, connectTimeoutMs);
+      },
+      onEvent,
+      autoReconnect: false,
+      connectTimeoutMs,
+    });
+
+    try {
+      if (deviceIdentity) {
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
+        );
+      } else {
+        await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
+      }
+
+      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
+
+      const hello = await client.connect();
 
       await ctx.onLog(
         "stdout",
