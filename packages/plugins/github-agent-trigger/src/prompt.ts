@@ -52,3 +52,40 @@ ${input.commentBody}
 
 Previous context: Paperclip issue ${input.paperclipIssueId}`;
 }
+
+interface PrReviewInput {
+  repo: string;
+  number: number;
+  prUrl: string;
+  prTitle: string;
+  prAuthor: string;
+  prBody: string;
+  diffUrl: string;
+  baseBranch: string | undefined;
+  commentAuthor: string;
+  commentBody: string;
+}
+
+export function buildPrReviewPrompt(input: PrReviewInput): string {
+  return `GitHub Pull Request review request — ${input.repo}#${input.number}.
+
+## Pull Request
+Title: ${input.prTitle}
+Author: ${input.prAuthor}
+URL: ${input.prUrl}
+Diff: ${input.diffUrl}
+${input.baseBranch ? `Base: ${input.baseBranch}` : ""}
+
+## PR Description
+${input.prBody}
+
+## Review request from ${input.commentAuthor}
+${input.commentBody}
+
+## Instructions
+1. Fetch the PR diff (${input.diffUrl}) and read the changed files.
+2. Address the reviewer's request directly — implement requested changes, answer questions, or push back with reasoning.
+3. If code changes are required: clone ${input.repo}, check out the PR branch, make the changes, and force-push to the PR branch.
+4. Use the github-comment tool to post a reply summarizing what you did or asking for clarification if blocked.
+5. Do NOT close the PR unless explicitly asked.`;
+}
