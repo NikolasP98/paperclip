@@ -171,6 +171,9 @@ importers:
 
   packages/adapters/openclaw-gateway:
     dependencies:
+      '@minion-stack/shared':
+        specifier: ^0.3.0
+        version: 0.3.0(ws@8.19.0)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -2142,6 +2145,14 @@ packages:
 
   '@mermaid-js/parser@1.0.0':
     resolution: {integrity: sha512-vvK0Hi/VWndxoh03Mmz6wa1KDriSPjS2XMZL/1l19HFwygiObEEoEwSDxOqyLzzAI6J2PU3261JjTMTO7x+BPw==}
+
+  '@minion-stack/shared@0.3.0':
+    resolution: {integrity: sha512-TXjlIhRzIDpPkYkMZnjF1GjujvmVxvhUnSOuekMR1ieDSiVpqDjJVw8OU6NWlTUZLqoB7zGA3sJQ77Y1qrHPOA==}
+    peerDependencies:
+      ws: ^8.0.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
 
   '@modelcontextprotocol/sdk@1.29.0':
     resolution: {integrity: sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==}
@@ -8068,6 +8079,10 @@ snapshots:
   '@mermaid-js/parser@1.0.0':
     dependencies:
       langium: 4.2.1
+
+  '@minion-stack/shared@0.3.0(ws@8.19.0)':
+    optionalDependencies:
+      ws: 8.19.0
 
   '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
     dependencies:
