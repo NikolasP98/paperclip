@@ -8,6 +8,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { hubIdentityMiddleware } from "./middleware/hub-identity.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -243,6 +244,10 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
+  if (HUB_PAPERCLIP_SHARED_SECRET) {
+    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET }));
+  }
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

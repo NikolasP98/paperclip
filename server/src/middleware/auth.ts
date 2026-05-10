@@ -21,6 +21,20 @@ interface ActorMiddlewareOptions {
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
+    // Short-circuit: hub-identity middleware already populated req.user.
+    if ((req as any).user) {
+      const hubUser = (req as any).user as { id: string; email: string | null; name: string | null };
+      const hubCompanyId: string | null = (req as any).companyId ?? null;
+      req.actor = {
+        type: "board",
+        userId: hubUser.id,
+        companyIds: hubCompanyId ? [hubCompanyId] : [],
+        isInstanceAdmin: false,
+        source: "session",
+      };
+      return next();
+    }
+
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
