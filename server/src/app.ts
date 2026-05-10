@@ -8,6 +8,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { hubIdentityMiddleware } from "./middleware/hub-identity.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
@@ -243,6 +244,10 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
+  if (HUB_PAPERCLIP_SHARED_SECRET) {
+    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET }));
+  }
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -252,53 +257,55 @@ export async function createApp(
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  if (opts.uiMode === "static") {
-    // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
-    const candidates = [
-      path.resolve(__dirname, "../ui-dist"),
-      path.resolve(__dirname, "../../ui/dist"),
-    ];
-    const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
-    if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
-      app.use(express.static(uiDist));
-      app.get(/^\/(?!assets\/).*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
-      });
-    } else {
-      console.warn("[paperclip] UI dist not found; running in API-only mode");
-    }
-  }
-
-  if (opts.uiMode === "vite-dev") {
-    const uiRoot = path.resolve(__dirname, "../../ui");
-    const hmrPort = resolveViteHmrPort(opts.serverPort);
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      root: uiRoot,
-      appType: "custom",
-      server: {
-        middlewareMode: true,
-        hmr: {
-          host: opts.bindHost,
-          port: hmrPort,
-          clientPort: hmrPort,
-        },
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
-      },
-    });
-
-    app.use(vite.middlewares);
-    app.get(/.*/, async (req, res, next) => {
-      try {
-        const templatePath = path.resolve(uiRoot, "index.html");
-        const template = fs.readFileSync(templatePath, "utf-8");
-        const html = applyUiBranding(await vite.transformIndexHtml(req.originalUrl, template));
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
-      } catch (err) {
-        next(err);
+  if (process.env.DISABLE_UI !== "1") {
+    if (opts.uiMode === "static") {
+      // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
+      const candidates = [
+        path.resolve(__dirname, "../ui-dist"),
+        path.resolve(__dirname, "../../ui/dist"),
+      ];
+      const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
+      if (uiDist) {
+        const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+        app.use(express.static(uiDist));
+        app.get(/^\/(?!assets\/).*/, (_req, res) => {
+          res.status(200).set("Content-Type", "text/html").end(indexHtml);
+        });
+      } else {
+        console.warn("[paperclip] UI dist not found; running in API-only mode");
       }
-    });
+    }
+
+    if (opts.uiMode === "vite-dev") {
+      const uiRoot = path.resolve(__dirname, "../../ui");
+      const hmrPort = resolveViteHmrPort(opts.serverPort);
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        root: uiRoot,
+        appType: "custom",
+        server: {
+          middlewareMode: true,
+          hmr: {
+            host: opts.bindHost,
+            port: hmrPort,
+            clientPort: hmrPort,
+          },
+          allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+        },
+      });
+
+      app.use(vite.middlewares);
+      app.get(/.*/, async (req, res, next) => {
+        try {
+          const templatePath = path.resolve(uiRoot, "index.html");
+          const template = fs.readFileSync(templatePath, "utf-8");
+          const html = applyUiBranding(await vite.transformIndexHtml(req.originalUrl, template));
+          res.status(200).set({ "Content-Type": "text/html" }).end(html);
+        } catch (err) {
+          next(err);
+        }
+      });
+    }
   }
 
   app.use(errorHandler);

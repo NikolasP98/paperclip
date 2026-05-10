@@ -45,7 +45,8 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclipai/ui build
+ARG INCLUDE_UI=0
+RUN if [ "$INCLUDE_UI" = "1" ]; then pnpm --filter @paperclipai/ui build; fi
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
@@ -66,7 +67,8 @@ ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
   PORT=3100 \
-  SERVE_UI=true \
+  SERVE_UI=false \
+  DISABLE_UI=1 \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
   USER_UID=${USER_UID} \

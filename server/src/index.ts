@@ -80,6 +80,11 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  if (process.env.DISABLE_UI === '1' && !process.env.HUB_PAPERCLIP_SHARED_SECRET) {
+    console.error('FATAL: DISABLE_UI=1 requires HUB_PAPERCLIP_SHARED_SECRET');
+    process.exit(1);
+  }
+
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {

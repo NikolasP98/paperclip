@@ -56,6 +56,7 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "ajv": "^8.18.0",
+    "jose": "^5.9.6",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.4.18",
     "chokidar": "^4.0.3",
