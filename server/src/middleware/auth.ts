@@ -22,9 +22,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
     // Short-circuit: hub-identity middleware already populated req.user.
-    if ((req as any).user) {
-      const hubUser = (req as any).user as { id: string; email: string | null; name: string | null };
-      const hubCompanyId: string | null = (req as any).companyId ?? null;
+    if (req.user) {
+      const hubUser = req.user;
+      const hubCompanyId: string | null = req.companyId ?? null;
       req.actor = {
         type: "board",
         userId: hubUser.id,

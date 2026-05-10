@@ -19,13 +19,13 @@ export function hubIdentityMiddleware(opts: HubIdentityOptions): RequestHandler 
         res.status(401).json({ error: 'invalid_hub_identity' });
         return;
       }
-      (req as any).user = {
+      req.user = {
         id: userId,
         email: (payload.email as string | null) ?? null,
         name: (payload.name as string | null) ?? null,
       };
       const jwtCompanyId = (payload.companyId as string | null) ?? null;
-      (req as any).companyId = jwtCompanyId;
+      req.companyId = jwtCompanyId;
 
       // Correction A — path-scope enforcement.
       const m = req.path.match(/^\/companies\/([^/]+)/);
