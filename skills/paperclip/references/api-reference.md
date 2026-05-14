@@ -492,14 +492,14 @@ POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "fil
 1. `POST /api/companies/{companyId}/logo` with file upload → returns `{ assetId }`.
 2. `PATCH /api/companies/{companyId}` with `{ "logoAssetId": "<assetId>" }`.
 
-## OpenClaw Invite Prompt (CEO)
+## Minion Invite Prompt (CEO)
 
-Use this endpoint to generate a short-lived OpenClaw onboarding invite prompt:
+Use this endpoint to generate a short-lived Minion onboarding invite prompt. (The legacy `openclaw` segment in the route path is preserved for API stability.)
 
 ```
 POST /api/companies/{companyId}/openclaw/invite-prompt
 {
-  "agentMessage": "optional note for the joining OpenClaw agent"
+  "agentMessage": "optional note for the joining Minion agent"
 }
 ```
 
@@ -753,7 +753,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/goals/:goalId`                 | Goal details       |
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
-| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
+| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate Minion invite prompt (CEO/board only) |
 
 ### Routines
 
