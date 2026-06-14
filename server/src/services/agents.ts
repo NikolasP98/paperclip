@@ -20,6 +20,26 @@ import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { cached, invalidateTags, keys, tags } from "../cache.js";
+
+/** Tag for a single agent's cached read-model (getById). */
+function agentEntityTags(agentId: string): string[] {
+  return tags.entity("agent", agentId);
+}
+
+/** Tag for a company's monthly-spend aggregates (getMonthlySpendByAgentIds). */
+function agentSpendTags(companyId: string): string[] {
+  return [`paperclip:agent-spend:${companyId}`];
+}
+
+/**
+ * Bust every cached read affected by a write to one agent: the agent's own
+ * read-model plus its company's monthly-spend aggregate (spend rolls up by
+ * company+agentIds and is embedded in getById via hydrateAgentSpend).
+ */
+async function invalidateAgent(agentId: string, companyId: string): Promise<void> {
+  await invalidateTags([...agentEntityTags(agentId), ...agentSpendTags(companyId)]);
+}
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -213,22 +233,38 @@ export function agentService(db: Db) {
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
     if (agentIds.length === 0) return new Map<string, number>();
     const { start, end } = currentUtcMonthWindow();
-    const rows = await db
-      .select({
-        agentId: costEvents.agentId,
-        spentMonthlyCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
-      })
-      .from(costEvents)
-      .where(
-        and(
-          eq(costEvents.companyId, companyId),
-          inArray(costEvents.agentId, agentIds),
-          gte(costEvents.occurredAt, start),
-          lt(costEvents.occurredAt, end),
-        ),
-      )
-      .groupBy(costEvents.agentId);
-    return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
+    // Key by company + month + the exact set of agent ids requested (sorted so
+    // call-order doesn't fragment the cache). Returns a Map, so cache the
+    // serialisable entries and rebuild the Map on read.
+    const sortedIds = [...agentIds].sort();
+    const monthKey = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`;
+    const cacheKey = keys.paperclip("agent-spend", {
+      t: companyId,
+      d: { month: monthKey, agents: sortedIds.join(",") },
+    });
+    const entries = await cached(
+      cacheKey,
+      { ttl: "5m", tags: agentSpendTags(companyId) },
+      async (): Promise<[string, number][]> => {
+        const rows = await db
+          .select({
+            agentId: costEvents.agentId,
+            spentMonthlyCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          })
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              inArray(costEvents.agentId, sortedIds),
+              gte(costEvents.occurredAt, start),
+              lt(costEvents.occurredAt, end),
+            ),
+          )
+          .groupBy(costEvents.agentId);
+        return rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]);
+      },
+    );
+    return new Map(entries);
   }
 
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
@@ -242,7 +278,9 @@ export function agentService(db: Db) {
     }));
   }
 
-  async function getById(id: string) {
+  type NormalizedAgent = ReturnType<typeof normalizeAgentRow>;
+
+  async function loadById(id: string): Promise<NormalizedAgent | null> {
     const row = await db
       .select()
       .from(agents)
@@ -251,6 +289,18 @@ export function agentService(db: Db) {
     if (!row) return null;
     const [hydrated] = await hydrateAgentSpend([row]);
     return normalizeAgentRow(hydrated);
+  }
+
+  // getById is called 10-20x per request during hierarchy traversal
+  // (assertNoCycle, getChainOfCommand, ensureManager). Short 60s TTL keyed by
+  // id and tagged with the agent entity so any write to this agent busts it
+  // (see invalidateAgent). The embedded spentMonthlyCents is bounded to 60s of
+  // staleness; the cost path also busts agent:<id> directly on each event.
+  // Not auth-sensitive: callers compare row.companyId for company-boundary
+  // enforcement after the read, and every mutation path invalidates first.
+  async function getById(id: string): Promise<NormalizedAgent | null> {
+    const cacheKey = keys.paperclip("agent", { d: { id } });
+    return cached(cacheKey, { ttl: "60s", tags: agentEntityTags(id) }, () => loadById(id));
   }
 
   async function ensureManager(companyId: string, managerId: string) {
@@ -351,6 +401,10 @@ export function agentService(db: Db) {
       .then((rows) => rows[0] ?? null);
     const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
 
+    if (normalizedUpdated) {
+      await invalidateAgent(normalizedUpdated.id, normalizedUpdated.companyId);
+    }
+
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
       const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
@@ -404,6 +458,7 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0]);
 
+      await invalidateAgent(created.id, companyId);
       return normalizeAgentRow(created);
     },
 
@@ -425,6 +480,7 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) await invalidateAgent(updated.id, updated.companyId);
       return updated ? normalizeAgentRow(updated) : null;
     },
 
@@ -447,6 +503,7 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) await invalidateAgent(updated.id, updated.companyId);
       return updated ? normalizeAgentRow(updated) : null;
     },
 
@@ -469,6 +526,8 @@ export function agentService(db: Db) {
         .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
 
+      // Bust before the re-read so getById returns the terminated row.
+      await invalidateAgent(id, existing.companyId);
       return getById(id);
     },
 
@@ -502,6 +561,12 @@ export function agentService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         return deleted ? normalizeAgentRow(deleted) : null;
+      }).then(async (result) => {
+        // Bust the removed agent's read-model and company spend. Subordinates
+        // had reportsTo cleared; their cached reportsTo is bounded by the 60s
+        // TTL (not auth-sensitive).
+        await invalidateAgent(id, existing.companyId);
+        return result;
       });
     },
 
@@ -517,6 +582,7 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
 
+      if (updated) await invalidateAgent(updated.id, updated.companyId);
       return updated ? normalizeAgentRow(updated) : null;
     },
 
@@ -534,6 +600,9 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
 
+      // canCreateAgents feeds authorization; bust immediately so a follow-up
+      // permission check never reads the pre-update value.
+      if (updated) await invalidateAgent(updated.id, updated.companyId);
       return updated ? normalizeAgentRow(updated) : null;
     },
 

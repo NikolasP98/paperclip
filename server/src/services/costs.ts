@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { invalidateTags, tags } from "../cache.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -92,6 +93,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      // A cost event updates the agent's and company's monthly spend, both of
+      // which are cached: getById embeds spentMonthlyCents (tagged agent:<id>)
+      // and getMonthlySpendByAgentIds is tagged paperclip:agent-spend:<company>.
+      // Bust both so spend figures are never stale past this write.
+      await invalidateTags([
+        ...tags.entity("agent", event.agentId),
+        `paperclip:agent-spend:${companyId}`,
+      ]);
 
       return event;
     },

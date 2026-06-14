@@ -41,6 +41,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { initCache } from "./cache.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -87,6 +88,7 @@ export async function startServer(): Promise<StartedServer> {
 
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
+  await initCache();
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }

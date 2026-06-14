@@ -18,6 +18,12 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { cached, invalidateTags, keys } from "../cache.js";
+
+/** Tag covering all cached project enumerations for a company. */
+function projectListTags(companyId: string): string[] {
+  return [`paperclip:projects:${companyId}`];
+}
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -400,9 +406,21 @@ async function ensureSinglePrimaryWorkspace(
 export function projectService(db: Db) {
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
-      const withGoals = await attachGoals(db, rows);
-      return attachWorkspaces(db, withGoals);
+      // Project enumeration fans out into goal + workspace + runtime-service
+      // joins. Cache 2m keyed by company, tagged for invalidation on any
+      // project/workspace mutation. Display-only data (no auth decisions);
+      // embedded Date fields round-trip to ISO strings under the valkey
+      // backend but serialise identically over HTTP.
+      const cacheKey = keys.paperclip("projects", { t: companyId });
+      return cached(
+        cacheKey,
+        { ttl: "2m", tags: projectListTags(companyId) },
+        async (): Promise<ProjectWithGoals[]> => {
+          const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+          const withGoals = await attachGoals(db, rows);
+          return attachWorkspaces(db, withGoals);
+        },
+      );
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
@@ -467,6 +485,7 @@ export function projectService(db: Db) {
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      await invalidateTags(projectListTags(companyId));
       return enriched!;
     },
 
@@ -520,6 +539,7 @@ export function projectService(db: Db) {
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+      await invalidateTags(projectListTags(row.companyId));
       return enriched ?? null;
     },
 
@@ -528,9 +548,10 @@ export function projectService(db: Db) {
         .delete(projects)
         .where(eq(projects.id, id))
         .returning()
-        .then((rows) => {
+        .then(async (rows) => {
           const row = rows[0] ?? null;
           if (!row) return null;
+          await invalidateTags(projectListTags(row.companyId));
           return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
         }),
 
@@ -632,6 +653,7 @@ export function projectService(db: Db) {
         return row;
       });
 
+      await invalidateTags(projectListTags(project.companyId));
       return created ? toWorkspace(created) : null;
     },
 
@@ -784,6 +806,7 @@ export function projectService(db: Db) {
         return row;
       });
 
+      await invalidateTags(projectListTags(existing.companyId));
       return updated ? toWorkspace(updated) : null;
     },
 
@@ -834,6 +857,7 @@ export function projectService(db: Db) {
         return row;
       });
 
+      await invalidateTags(projectListTags(existing.companyId));
       return removed ? toWorkspace(removed) : null;
     },
 

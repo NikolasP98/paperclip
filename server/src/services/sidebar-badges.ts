@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, not } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
+import { cached, keys } from "../cache.js";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
@@ -22,7 +23,57 @@ function isDismissed(
   return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
+/** Serialisable shape of the raw company-scoped aggregates we cache. */
+interface SidebarBadgeSource {
+  approvals: Array<{ id: string; updatedAt: Date | string | null }>;
+  latestRunByAgent: Array<{ id: string; runStatus: string; createdAt: Date | string }>;
+}
+
 export function sidebarBadgeService(db: Db) {
+  /**
+   * The two heavy company-scoped aggregations. Cached for 30s keyed by company
+   * only — these rows are NOT user-specific and contain no dismissal state.
+   * Per-user dismissal filtering is applied in-memory after the read (below),
+   * so the cache never holds user-scoped or stale-permission data.
+   */
+  async function loadSource(companyId: string): Promise<SidebarBadgeSource> {
+    const cacheKey = keys.paperclip("sidebar-badges", { t: companyId });
+    return cached(
+      cacheKey,
+      { ttl: "30s", tags: [`paperclip:sidebar-badges:${companyId}`] },
+      async (): Promise<SidebarBadgeSource> => {
+        const approvalRows = await db
+          .select({ id: approvals.id, updatedAt: approvals.updatedAt })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.companyId, companyId),
+              inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            ),
+          );
+
+        const latestRunByAgent = await db
+          .selectDistinctOn([heartbeatRuns.agentId], {
+            id: heartbeatRuns.id,
+            runStatus: heartbeatRuns.status,
+            createdAt: heartbeatRuns.createdAt,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(agents.companyId, companyId),
+              not(eq(agents.status, "terminated")),
+            ),
+          )
+          .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+
+        return { approvals: approvalRows, latestRunByAgent };
+      },
+    );
+  }
+
   return {
     get: async (
       companyId: string,
@@ -32,35 +83,13 @@ export function sidebarBadgeService(db: Db) {
         unreadTouchedIssues?: number;
       },
     ): Promise<SidebarBadges> => {
-      const actionableApprovals = await db
-        .select({ id: approvals.id, updatedAt: approvals.updatedAt })
-        .from(approvals)
-        .where(
-          and(
-            eq(approvals.companyId, companyId),
-            inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
-          ),
-        )
-        .then((rows) =>
-          rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
-        );
+      const source = await loadSource(companyId);
 
-      const latestRunByAgent = await db
-        .selectDistinctOn([heartbeatRuns.agentId], {
-          id: heartbeatRuns.id,
-          runStatus: heartbeatRuns.status,
-          createdAt: heartbeatRuns.createdAt,
-        })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            eq(agents.companyId, companyId),
-            not(eq(agents.status, "terminated")),
-          ),
-        )
-        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+      const actionableApprovals = source.approvals.filter(
+        (row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt),
+      ).length;
+
+      const latestRunByAgent = source.latestRunByAgent;
 
       const failedRuns = latestRunByAgent.filter((row) =>
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
