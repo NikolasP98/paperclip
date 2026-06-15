@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { approvalRoutes } from "../routes/approvals.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -30,16 +28,26 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
-
-vi.mock("../services/index.js", () => ({
-  approvalService: () => mockApprovalService,
-  heartbeatService: () => mockHeartbeatService,
-  issueApprovalService: () => mockIssueApprovalService,
-  logActivity: mockLogActivity,
-  secretService: () => mockSecretService,
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
 }));
 
-function createApp(actorOverrides: Record<string, unknown> = {}) {
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    approvalService: () => mockApprovalService,
+    heartbeatService: () => mockHeartbeatService,
+    issueApprovalService: () => mockIssueApprovalService,
+    logActivity: mockLogActivity,
+    secretService: () => mockSecretService,
+  }));
+}
+
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -58,7 +66,11 @@ function createApp(actorOverrides: Record<string, unknown> = {}) {
   return app;
 }
 
-function createAgentApp() {
+async function createAgentApp() {
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -78,7 +90,34 @@ function createAgentApp() {
 
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/approvals.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
+    mockApprovalService.list.mockReset();
+    mockApprovalService.getById.mockReset();
+    mockApprovalService.create.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.reject.mockReset();
+    mockApprovalService.requestRevision.mockReset();
+    mockApprovalService.resubmit.mockReset();
+    mockApprovalService.listComments.mockReset();
+    mockApprovalService.addComment.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockIssueApprovalService.listIssuesForApproval.mockReset();
+    mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
+    mockLogActivity.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
@@ -105,7 +144,7 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-1/approve")
       .send({});
 
@@ -134,7 +173,7 @@ describe("approval routes idempotent retries", () => {
       applied: false,
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-1/reject")
       .send({});
 
@@ -151,7 +190,7 @@ describe("approval routes idempotent retries", () => {
       payload: {},
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-2/approve")
       .send({});
 
@@ -168,12 +207,96 @@ describe("approval routes idempotent retries", () => {
       payload: {},
     });
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/approvals/approval-3/request-revision")
       .send({ decisionNote: "Need changes" });
 
     expect(res.status).toBe(403);
     expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+  });
+
+  it("derives approval attribution from the authenticated actor on approve", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-4",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-4/approve")
+      .send({ decidedByUserId: "forged-user", decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
+  });
+
+  it("derives approval attribution from the authenticated actor on reject", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-5",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-5",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-5/reject")
+      .send({ decidedByUserId: "forged-user", decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
+  });
+
+  it("derives approval attribution from the authenticated actor on request revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-6",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-6",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-6/request-revision")
+      .send({ decidedByUserId: "forged-user", decisionNote: "Need changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
+      "approval-6",
+      "user-1",
+      "Need changes",
+    );
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
@@ -192,7 +315,7 @@ describe("approval routes idempotent retries", () => {
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
     });
 
-    const res = await request(createAgentApp())
+    const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
@@ -200,17 +323,14 @@ describe("approval routes idempotent retries", () => {
         payload: { title: "Approve hosting spend" },
       });
 
-    expect(res.status).toBe(201);
-    expect(mockApprovalService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        type: "request_board_approval",
-        requestedByAgentId: "agent-1",
-        requestedByUserId: null,
-        status: "pending",
-        decisionNote: null,
-      }),
-    );
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+    });
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-1",

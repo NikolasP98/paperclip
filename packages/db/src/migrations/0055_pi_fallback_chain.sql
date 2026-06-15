@@ -1,1 +1,0 @@
-ALTER TABLE "agents" ADD COLUMN "active_adapter_index" integer DEFAULT 0 NOT NULL;

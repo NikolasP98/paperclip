@@ -1,6 +1,6 @@
 {
-  "id": "0430744d-3369-467d-bf4e-17f90f632eeb",
-  "prevId": "1c293cd5-9346-43b5-920f-1f3d127254c8",
+  "id": "dfe6d9fd-7969-4f13-a701-1fcc62bf0015",
+  "prevId": "eb8aba7f-540a-4ac6-9f58-1ed449707201",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1178,13 +1178,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "active_adapter_index": {
-          "name": "active_adapter_index",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         },
         "budget_monthly_cents": {
           "name": "budget_monthly_cents",
@@ -6314,6 +6307,12 @@
         },
         "process_pid": {
           "name": "process_pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "process_group_id": {
+          "name": "process_group_id",
           "type": "integer",
           "primaryKey": false,
           "notNull": false

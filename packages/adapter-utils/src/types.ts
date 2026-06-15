@@ -2,6 +2,9 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { AdapterExecutionTarget } from "./execution-target.js";
+
 export interface AdapterAgent {
   id: string;
   companyId: string;
@@ -61,12 +64,16 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export type AdapterExecutionErrorFamily = "transient_upstream";
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
   errorMessage?: string | null;
   errorCode?: string | null;
+  errorFamily?: AdapterExecutionErrorFamily | null;
+  retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
@@ -124,15 +131,34 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Legacy remote transport view. Prefer `executionTarget`, which is the
+   * provider-neutral contract produced by core runtime code.
+   */
+  executionTransport?: {
+    remoteExecution?: Record<string, unknown> | null;
+  };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
-  onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
 
 export interface AdapterModel {
   id: string;
   label: string;
+}
+
+export type AdapterModelProfileKey = "cheap";
+
+export interface AdapterModelProfileDefinition {
+  key: AdapterModelProfileKey;
+  label: string;
+  description?: string;
+  adapterConfig: Record<string, unknown>;
+  source?: "adapter_default" | "discovered";
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -173,6 +199,8 @@ export type AdapterSkillOrigin =
 export interface AdapterSkillEntry {
   key: string;
   runtimeName: string | null;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
   required?: boolean;
@@ -192,6 +220,7 @@ export interface AdapterSkillSnapshot {
   supported: boolean;
   mode: AdapterSkillSyncMode;
   desiredSkills: string[];
+  desiredSkillEntries?: Array<{ key: string; versionId: string | null }>;
   entries: AdapterSkillEntry[];
   warnings: string[];
 }
@@ -207,6 +236,20 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /**
+   * Optional execution target the adapter should run probes against.
+   *
+   * If omitted (or `kind === "local"`), the adapter tests on the Paperclip
+   * host. For SSH/sandbox targets the adapter should run command/auth probes
+   * inside the remote environment so the result reflects what an agent run
+   * would actually see at execution time.
+   */
+  executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Friendly name of the environment being tested (when `executionTarget` is set).
+   * Surfaced in check messages so users see which environment the probe ran in.
+   */
+  environmentName?: string | null;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -295,6 +338,23 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+export interface AdapterRuntimeCommandSpec {
+  /**
+   * The command Paperclip should execute for this adapter in the current config.
+   */
+  command: string;
+  /**
+   * Optional command name/path to probe for availability before launch.
+   * Defaults to `command` when omitted by the consumer.
+   */
+  detectCommand?: string | null;
+  /**
+   * Optional shell snippet that can install or expose the adapter command in a
+   * fresh remote runtime. It should be idempotent.
+   */
+  installCommand?: string | null;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -306,6 +366,15 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  modelProfiles?: AdapterModelProfileDefinition[];
+  listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
+  /**
+   * Optional explicit refresh hook for model discovery.
+   * Use this when the adapter caches discovered models and needs a bypass path
+   * so the UI can fetch newly released models without waiting for cache expiry
+   * or a Paperclip code update.
+   */
+  refreshModels?: () => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -334,6 +403,41 @@ export interface ServerAdapterModule {
    * resolved inside this method — the caller receives a fully hydrated schema.
    */
   getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
+
+  // ---------------------------------------------------------------------------
+  // Adapter capability flags
+  //
+  // These allow adapter plugins to declare what "local" capabilities they
+  // support, replacing hardcoded type lists in the server and UI.
+  // All flags are optional — when undefined, the server falls back to
+  // legacy hardcoded lists for built-in adapters.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Adapter supports managed instructions bundle (AGENTS.md files).
+   * When true, the server uses instructionsPathKey (default "instructionsFilePath")
+   * to resolve the instructions config key, and the UI shows the bundle editor.
+   * Built-in local adapters default to true; external plugins must opt in.
+   */
+  supportsInstructionsBundle?: boolean;
+
+  /**
+   * The adapterConfig key that holds the instructions file path.
+   * Defaults to "instructionsFilePath" when supportsInstructionsBundle is true.
+   */
+  instructionsPathKey?: string;
+
+  /**
+   * Adapter needs runtime skill entries materialized (written to disk)
+   * before being passed via config. Used by adapters that scan a directory
+   * rather than reading config.paperclipRuntimeSkills.
+   */
+  requiresMaterializedRuntimeSkills?: boolean;
+  /**
+   * Optional: describe how this adapter's runtime command should be launched
+   * and provisioned in fresh remote environments such as sandboxes.
+   */
+  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,9 +479,18 @@ export interface CreateConfigValues {
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
+  /**
+   * Optional cheap model profile config for new agents on adapters that
+   * support model profiles. Persisted under
+   * `runtimeConfig.modelProfiles.cheap.adapterConfig`, never on the primary
+   * `adapterConfig`.
+   */
+  cheapModel?: string;
+  cheapModelEnabled?: boolean;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
+  fastMode: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;
@@ -392,9 +505,25 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
+  // openclaw_gateway adapter fields
+  authToken?: string;
+  agentId?: string;
+  sessionKeyStrategy?: string;
+  sessionKey?: string;
+  timeoutSec?: number;
+  waitTimeoutMs?: number;
+  disableDeviceAuth?: boolean;
+  autoPairOnFirstConnect?: boolean;
+  devicePrivateKeyPem?: string;
+  role?: string;
+  scopes?: string;
+  paperclipApiUrl?: string;
+  headersJson?: string;
+  password?: string;
 }
