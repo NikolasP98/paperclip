@@ -2462,6 +2462,8 @@ export function agentRoutes(
       .update(agentsTable)
       .set({ activeAdapterIndex: rawIndex, updatedAt: new Date() })
       .where(eq(agentsTable.id, id));
+    // Raw write bypasses the service mutators; bust the cached read-model.
+    await svc.invalidate(id, existing.companyId);
 
     res.json({ ok: true, activeAdapterIndex: rawIndex });
   });

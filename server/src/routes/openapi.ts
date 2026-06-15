@@ -1052,6 +1052,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "patch",
+  path: "/api/agents/{id}/active-adapter",
+  tags: ["agents"],
+  summary: "Set the agent's active adapter index in its fallback chain",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ activeAdapterIndex: z.number().int().min(0) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
   path: "/api/agents/{id}/instructions-path",
   tags: ["agents"],
   summary: "Update agent instructions path",

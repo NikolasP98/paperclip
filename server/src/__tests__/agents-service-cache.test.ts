@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agents, costEvents } from "@paperclipai/db";
 import { agentService } from "../services/agents.ts";
 import { __resetCacheForTests } from "../cache.ts";
 
@@ -54,43 +55,55 @@ function makeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
 }
 
 /**
- * Minimal drizzle stub. Each `db.select()` consumes one queued result.
- * - getById issues: (1) agents read (thenable) (2) costEvents aggregate (groupBy).
- * We count agent-row reads so the test can assert cache hits skip the DB.
+ * Minimal drizzle stub. Dispatches on the *table* (and, for the agents table,
+ * on the WHERE column) so it stays correct regardless of how many reads a
+ * single loadById issues. loadById currently runs three reads:
+ *   1. agents WHERE id = ?         → the by-id read-model load (counted here)
+ *   2. agents WHERE company_id = ? → listCompanyAgentRows (org-chain hydration)
+ *   3. costEvents …GROUP BY        → monthly-spend aggregate (separately cached)
+ * Only the by-id agents read counts as an `agentSelects`, so the assertions
+ * track loadById executions — i.e. cache misses — not raw query volume.
  */
 function createDbStub(agentRow: AgentRow | null) {
   const counts = { agentSelects: 0, costSelects: 0 };
 
-  // A chainable that is awaitable (agents path: .where().then()) and also
-  // supports .groupBy() (costEvents path).
-  function makeQuery(kind: "agent" | "cost") {
-    const result: unknown[] =
-      kind === "agent" ? (agentRow ? [agentRow] : []) : [];
-    const where = vi.fn(() => {
-      const thenable = {
-        then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(result)),
-        groupBy: vi.fn(async () => result),
-      };
-      return thenable;
-    });
-    return { where };
+  // A result that is awaitable (.then) and also chainable via .groupBy()
+  // (costEvents path), so the same shape serves every read.
+  function thenable(rows: unknown[]) {
+    return {
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(rows)),
+      groupBy: vi.fn(async () => rows),
+    };
   }
 
-  // We need select() to decide which table is being read. Drizzle calls
-  // select().from(table). We branch on the next expected query in getById:
-  // first select in a getById call is agents, second is costEvents.
-  let phase: "agent" | "cost" = "agent";
+  // A drizzle filter (eq/and(...)) carries its referenced columns in
+  // `.queryChunks`; we read their `.name` to tell the by-id read apart from
+  // the company-roster read on the same table.
+  function predicateColumns(predicate: unknown): string[] {
+    const chunks = (predicate as { queryChunks?: unknown[] })?.queryChunks ?? [];
+    return chunks
+      .filter((c): c is { name: string } => !!c && typeof c === "object" && "name" in c)
+      .map((c) => c.name);
+  }
+
   const select = vi.fn(() => ({
-    from: vi.fn(() => {
-      if (phase === "agent") {
-        counts.agentSelects += 1;
-        phase = "cost";
-        return makeQuery("agent");
-      }
-      counts.costSelects += 1;
-      phase = "agent";
-      return makeQuery("cost");
-    }),
+    from: vi.fn((table: unknown) => ({
+      where: vi.fn((predicate: unknown) => {
+        if (table === agents) {
+          if (predicateColumns(predicate).includes("id")) {
+            counts.agentSelects += 1; // by-id read-model load
+            return thenable(agentRow ? [agentRow] : []);
+          }
+          // listCompanyAgentRows (company roster for org-chain hydration)
+          return thenable(agentRow ? [agentRow] : []);
+        }
+        if (table === costEvents) {
+          counts.costSelects += 1;
+          return thenable([]);
+        }
+        return thenable([]);
+      }),
+    })),
   }));
 
   // Mutations: update().set().where().returning()

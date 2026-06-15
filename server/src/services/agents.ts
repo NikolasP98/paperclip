@@ -471,11 +471,14 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .returning()
       .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? await getById(updated.id) : null;
 
-    if (normalizedUpdated) {
-      await invalidateAgent(normalizedUpdated.id, normalizedUpdated.companyId);
+    // Bust the cached read-model BEFORE re-reading: the `existing` read above
+    // populated the cache with the pre-update row, so a re-read here would hit
+    // that stale entry and return it (dropping the just-written changes).
+    if (updated) {
+      await invalidateAgent(updated.id, updated.companyId);
     }
+    const normalizedUpdated = updated ? await getById(updated.id) : null;
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
@@ -499,6 +502,13 @@ export function agentService(db: Db) {
   }
 
   return {
+    /**
+     * Bust the cached read-model for one agent. Callers that mutate an agent
+     * row directly (bypassing the mutators below — e.g. plugin host services
+     * writing `permissions`) MUST call this so the next getById reads fresh.
+     */
+    invalidate: invalidateAgent,
+
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {

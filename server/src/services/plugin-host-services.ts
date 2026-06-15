@@ -2442,6 +2442,9 @@ export function buildHostServices(
             .update(agentsTable)
             .set({ permissions, updatedAt: new Date() })
             .where(eq(agentsTable.id, agent.id));
+          // Raw write bypasses the agent service mutators, so bust the cached
+          // read-model or the readback below returns the pre-update policy.
+          await agents.invalidate(agent.id, companyId);
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
           const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"

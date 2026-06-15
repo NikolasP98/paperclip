@@ -495,6 +495,11 @@ export function pluginManagedAgentService(
       const binding = await getBinding(companyId, agentKey);
       const boundAgentId = typeof binding?.data?.agentId === "string" ? binding.data.agentId : null;
       if (!boundAgentId) return resolution(companyId, declaration, null, "missing");
+      // Managed reconcile is a drift detector: it must compare against the
+      // authoritative agent row, not the cached read-model (which many raw
+      // table writers across the codebase leave stale). Bust before reading so
+      // user edits made outside the agent service are honoured here.
+      await agentSvc.invalidate(boundAgentId, companyId);
       const agent = await agentSvc.getById(boundAgentId);
       if (!agent || agent.companyId !== companyId || agent.status === "terminated") {
         return resolution(companyId, declaration, null, "missing");

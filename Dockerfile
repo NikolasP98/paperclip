@@ -71,7 +71,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /paperclip/.pi/agent/sessions /paperclip/.pi/agent/skills /paperclip/.pi/paperclips /paperclip/.cache/opencode \
+  && mkdir -p /paperclip/.pi/agent/sessions /paperclip/.pi/agent/skills /paperclip/.pi/paperclips /paperclip/.cache/opencode /paperclip/.npm \
   && chown -R node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/

@@ -39,8 +39,10 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
-# Always fix npm cache ownership (global installs run as root during build)
-chown -R node:node /paperclip/.npm 2>/dev/null || true
+# The npm cache (HOME=/paperclip → /paperclip/.npm) is created node-owned at
+# build time, so no runtime chown is needed in the default flow; a UID/GID
+# remap is already covered by the recursive `chown -R node:node /paperclip`
+# above.
 
 # Inject secrets from Infisical via machine identity token
 if [ -n "$INFISICAL_CLIENT_ID" ] && [ -n "$INFISICAL_CLIENT_SECRET" ]; then
