@@ -14,6 +14,10 @@ const attachmentMaxBytesSchema = z
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
 
 export const createCompanySchema = z.object({
+  // Optional caller-supplied primary key. The Minion hub passes the hub
+  // organization id so that company.id === org.id (native single-id model,
+  // no separate org→company mapping). Omitted → server generates a UUID.
+  id: z.string().uuid().optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
