@@ -6,6 +6,8 @@ const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().option
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
 
 export const createCompanySchema = z.object({
+  // Optional caller-supplied primary key (hub passes the org id so company.id === org.id).
+  id: z.string().uuid().optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
