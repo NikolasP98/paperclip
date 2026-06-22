@@ -67,6 +67,27 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
+  && git clone --depth 1 https://github.com/browser-use/browser-harness /opt/browser-harness \
+  && cd /opt/browser-harness \
+  && UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --python 3.12 -e . \
+  && chown -R node:node /opt/browser-harness \
+  && /usr/local/bin/browser-harness --help > /dev/null 2>&1 \
+  && chmod o+rx /root /root/.local /root/.local/share \
+  && chmod -R o+rX /root/.local/share/uv /root/.local/bin
+
+# Hermes Agent (default primary adapter for paperclip agents)
+RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --python 3.12 "git+https://github.com/NousResearch/hermes-agent" \
+  && ln -sf /root/.local/share/uv/tools/hermes-agent/bin/hermes /usr/local/bin/hermes \
+  && ln -sf /root/.local/share/uv/tools/hermes-agent/bin/hermes-acp /usr/local/bin/hermes-acp \
+  && ln -sf /root/.local/share/uv/tools/hermes-agent/bin/hermes-agent /usr/local/bin/hermes-agent \
+  && /usr/local/bin/hermes --version
+
+# Pre-create node-owned hermes home so the runtime can write config + sessions
+RUN mkdir -p /paperclip/.hermes/skills /paperclip/.hermes/sessions /paperclip/.hermes/logs /paperclip/.hermes/memories \
+  && { echo "provider: openrouter"; echo "model: deepseek/deepseek-chat-v3.1"; echo "auto_compress: true"; echo "session_persistence: true"; } > /paperclip/.hermes/config.yaml \
+  && chown -R node:node /paperclip/.hermes
+
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @mariozechner/pi-coding-agent@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
