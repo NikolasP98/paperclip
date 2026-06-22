@@ -74,7 +74,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
   && chown -R node:node /opt/browser-harness \
   && /usr/local/bin/browser-harness --help > /dev/null 2>&1 \
   && chmod o+rx /root /root/.local /root/.local/share \
-  && chmod -R o+rX /root/.local/share/uv /root/.local/bin
+  && chmod -R o+rX /root/.local/share/uv 2>/dev/null || true
 
 # Hermes Agent (default primary adapter for paperclip agents)
 RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --python 3.12 "git+https://github.com/NousResearch/hermes-agent" \
