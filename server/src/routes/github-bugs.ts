@@ -84,6 +84,13 @@ export async function handleGithubEvent(
   }
 
   const originId = `${fullName}#${gh.number}`;
+  // ponytail: no partial-unique DB index on (companyId, originKind, originId)
+  // for originKind "github_issue" (unlike routine_execution etc. — see
+  // packages/db/src/schema/issues.ts:95-143), so two concurrent deliveries of
+  // the same GitHub event can both pass this select before either commits its
+  // insert, racing a duplicate issue. Index deferred: migrations are blocked
+  // by the pre-existing duplicate-0057 numbering defect. Add the partial
+  // unique index (and switch this to an upsert-on-conflict) once that's fixed.
   const [existing] = await db
     .select()
     .from(issues)
@@ -112,6 +119,9 @@ export async function handleGithubEvent(
     return { action: "duplicate", issueId: existing.id };
   }
 
+  // ponytail: if deps.agentId (GITHUB_BUGS_AGENT_ID) is pending approval or
+  // terminated, issueService(...).create's assertAssignableAgent check
+  // throws → this delivery 500s. Operators must keep that agent active.
   const created = await issueService(db).create(deps.companyId, {
     title: gh.title,
     description: `GitHub issue: ${gh.html_url}\n\n${gh.body ?? ""}`,

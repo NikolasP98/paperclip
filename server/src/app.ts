@@ -234,22 +234,6 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
   }));
-  const githubBugsSecret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
-  const githubBugsCompanyId = process.env.GITHUB_BUGS_COMPANY_ID?.trim();
-  const githubBugsAgentId = process.env.GITHUB_BUGS_AGENT_ID?.trim();
-  const githubBugRepo = process.env.GITHUB_BUG_REPO?.trim();
-  if (githubBugsSecret && githubBugsCompanyId && githubBugsAgentId && githubBugRepo) {
-    api.use(
-      githubBugRoutes(db, {
-        heartbeat: heartbeatService(db, { pluginWorkerManager: workerManager }),
-        repoSandbox: getRepoSandbox(),
-        secret: githubBugsSecret,
-        companyId: githubBugsCompanyId,
-        agentId: githubBugsAgentId,
-        bugRepo: githubBugRepo,
-      }),
-    );
-  }
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
@@ -350,6 +334,28 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  // Mounted at app level (like /api/auth and llmRoutes above) so it sits
+  // BEFORE the hubIdentityMiddleware guard below. GitHub sends no
+  // x-hub-identity JWT — it authenticates via HMAC (X-Hub-Signature-256)
+  // inside the route handler itself — so it must never be routed through
+  // that guard, or every delivery gets a 401 before the HMAC check runs.
+  const githubBugsSecret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+  const githubBugsCompanyId = process.env.GITHUB_BUGS_COMPANY_ID?.trim();
+  const githubBugsAgentId = process.env.GITHUB_BUGS_AGENT_ID?.trim();
+  const githubBugRepo = process.env.GITHUB_BUG_REPO?.trim();
+  if (githubBugsSecret && githubBugsCompanyId && githubBugsAgentId && githubBugRepo) {
+    app.use(
+      "/api",
+      githubBugRoutes(db, {
+        heartbeat: heartbeatService(db, { pluginWorkerManager: workerManager }),
+        repoSandbox: getRepoSandbox(),
+        secret: githubBugsSecret,
+        companyId: githubBugsCompanyId,
+        agentId: githubBugsAgentId,
+        bugRepo: githubBugRepo,
+      }),
+    );
+  }
   const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
   if (HUB_PAPERCLIP_SHARED_SECRET) {
     app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET }));
