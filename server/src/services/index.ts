@@ -76,3 +76,10 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  getRepoSandbox,
+  repoSandboxService,
+  resolveRepoSandboxConfig,
+  type RepoSandboxEntry,
+  type RepoSandboxService,
+} from "./repo-sandbox.js";
