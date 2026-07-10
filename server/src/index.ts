@@ -38,6 +38,7 @@ import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
+  getRepoSandbox,
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
@@ -735,7 +736,14 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
-  
+
+  const repoSandbox = getRepoSandbox();
+  if (repoSandbox) {
+    void repoSandbox.ensureClones().catch((err) => {
+      console.error("[repo-sandbox] clone bootstrap failed:", err);
+    });
+  }
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
