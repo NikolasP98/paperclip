@@ -31,6 +31,15 @@ describe("resolveRepoSandboxConfig", () => {
       repos: [{ name: "a", gitUrl: "https://github.com/o/a.git", defaultBranch: "main" }],
     });
   });
+
+  it("rejects null entries in REPO_SANDBOX_REPOS", () => {
+    expect(() => {
+      resolveRepoSandboxConfig({
+        REPO_SANDBOX_DIR: "/x",
+        REPO_SANDBOX_REPOS: "[null]",
+      });
+    }).toThrow("REPO_SANDBOX_REPOS entries need name, gitUrl, defaultBranch");
+  });
 });
 
 describe("repoSandboxService", () => {
@@ -62,6 +71,20 @@ describe("repoSandboxService", () => {
     const after = git(["rev-parse", "origin/main"], cloneDir);
     expect(after).not.toBe(before);
     expect(after).toBe(git(["rev-parse", "main"], seedDir));
+  });
+
+  it("coalesces concurrent refreshes into one fetch", async () => {
+    const svc = repoSandboxService({
+      rootDir: sandboxRoot,
+      repos: [{ name: "fixture", gitUrl: originDir, defaultBranch: "main" }],
+    });
+    const p1 = svc.refresh("fixture");
+    const p2 = svc.refresh("fixture");
+    expect(p2).toBe(p1);
+    await Promise.all([p1, p2]);
+    const p3 = svc.refresh("fixture");
+    expect(p3).not.toBe(p1);
+    await p3;
   });
 
   it("maps a github full_name to a registry entry", () => {

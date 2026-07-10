@@ -39,7 +39,7 @@ export function resolveRepoSandboxConfig(
   if (!Array.isArray(parsed)) throw new Error("REPO_SANDBOX_REPOS must be a JSON array");
   const repos = parsed.map((r) => {
     const entry = r as Partial<RepoSandboxEntry>;
-    if (!entry.name || !entry.gitUrl || !entry.defaultBranch) {
+    if (!entry || typeof entry !== "object" || !entry.name || !entry.gitUrl || !entry.defaultBranch) {
       throw new Error("REPO_SANDBOX_REPOS entries need name, gitUrl, defaultBranch");
     }
     return { name: entry.name, gitUrl: entry.gitUrl, defaultBranch: entry.defaultBranch };
