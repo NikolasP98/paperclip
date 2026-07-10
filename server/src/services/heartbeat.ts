@@ -55,6 +55,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { notifyGithubBugRunFailure } from "./github-bugs-notify.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -4649,6 +4650,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      if (updated.status === "failed") {
+        const context = parseObject(updated.contextSnapshot);
+        void notifyGithubBugRunFailure(db, {
+          issueId: readNonEmptyString(context.issueId),
+          runId: updated.id,
+          reason: updated.error ?? "Run failed with no further detail.",
+        });
+      }
     }
 
     return updated;

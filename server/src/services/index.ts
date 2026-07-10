@@ -36,6 +36,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { notifyGithubBugRunFailure, parseGithubOrigin, buildFailureComment } from "./github-bugs-notify.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
