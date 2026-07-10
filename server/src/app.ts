@@ -19,6 +19,7 @@ import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { githubBugRoutes } from "./routes/github-bugs.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
@@ -65,6 +66,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { heartbeatService, getRepoSandbox } from "./services/index.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -232,6 +234,22 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
   }));
+  const githubBugsSecret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+  const githubBugsCompanyId = process.env.GITHUB_BUGS_COMPANY_ID?.trim();
+  const githubBugsAgentId = process.env.GITHUB_BUGS_AGENT_ID?.trim();
+  const githubBugRepo = process.env.GITHUB_BUG_REPO?.trim();
+  if (githubBugsSecret && githubBugsCompanyId && githubBugsAgentId && githubBugRepo) {
+    api.use(
+      githubBugRoutes(db, {
+        heartbeat: heartbeatService(db, { pluginWorkerManager: workerManager }),
+        repoSandbox: getRepoSandbox(),
+        secret: githubBugsSecret,
+        companyId: githubBugsCompanyId,
+        agentId: githubBugsAgentId,
+        bugRepo: githubBugRepo,
+      }),
+    );
+  }
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
