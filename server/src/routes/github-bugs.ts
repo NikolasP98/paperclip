@@ -68,7 +68,7 @@ export async function handleGithubEvent(
     const entry = fullName ? deps.repoSandbox?.findByCloneUrlRepo(fullName) : null;
     if (!entry || !deps.repoSandbox) return { action: "ignored", reason: "unregistered repo" };
     // warm-cache only: workspace realization fetches again before each worktree (baseRef origin/<branch>)
-    await deps.repoSandbox.refresh(entry.name).catch(() => undefined);
+    await deps.repoSandbox.refresh(entry.name).catch((err) => { console.error("[github-bugs] push refresh failed:", err); });
     return { action: "refreshed", repo: entry.name };
   }
 
@@ -158,6 +158,7 @@ export async function handleGithubEvent(
 export function githubBugRoutes(db: Db, deps: GithubBugsDeps): Router {
   const router = Router();
   router.post("/github-bugs/webhook", async (req, res) => {
+    // rawBody is captured only for application/json bodies (express.json verify hook) — the GitHub webhook MUST be configured with content type application/json, or every delivery 401s here.
     const rawBody = (req as { rawBody?: Buffer }).rawBody;
     const signature = req.get("x-hub-signature-256");
     if (!rawBody || !verifyGitHubSignature(rawBody, signature, deps.secret)) {
