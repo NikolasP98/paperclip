@@ -36,10 +36,10 @@ UPDATE companies SET id = 'c9e8dc46-27b6-4aea-86a1-a2eb6b23be2d'
   WHERE id = 'a32be1cc-88e9-4207-a4da-cf818e3c91e9'
     AND NOT EXISTS (SELECT 1 FROM companies WHERE id = 'c9e8dc46-27b6-4aea-86a1-a2eb6b23be2d');--> statement-breakpoint
 
--- Step 3: cloud_upstreams.target_company_id is a plain text column (not a FK), so
+-- Step 3: cloud_upstream_connections.target_company_id is a plain text column (not a FK), so
 -- the cascade above does not touch it. Repoint any rows that referenced the old
 -- local company ids. No-op if empty.
-UPDATE cloud_upstreams SET target_company_id = '21e0601b-f632-43fd-8414-d644af4271f4'
+UPDATE cloud_upstream_connections SET target_company_id = '21e0601b-f632-43fd-8414-d644af4271f4'
   WHERE target_company_id = 'fea398fc-ca7f-4dc8-be3f-38b8725a51db';--> statement-breakpoint
-UPDATE cloud_upstreams SET target_company_id = 'c9e8dc46-27b6-4aea-86a1-a2eb6b23be2d'
+UPDATE cloud_upstream_connections SET target_company_id = 'c9e8dc46-27b6-4aea-86a1-a2eb6b23be2d'
   WHERE target_company_id = 'a32be1cc-88e9-4207-a4da-cf818e3c91e9';
