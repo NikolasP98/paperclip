@@ -1912,6 +1912,7 @@ const issueListSelect = {
   projectId: issues.projectId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
+  pipelineId: issues.pipelineId,
   parentId: issues.parentId,
   title: issues.title,
   description: sql<string | null>`

@@ -185,6 +185,8 @@ export type {
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Portfolio } from "./portfolio.js";
+export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./pipeline.js";
 export type {
   CompanySearchHighlight,
   CompanySearchArtifactSummary,

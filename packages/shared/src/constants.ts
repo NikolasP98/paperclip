@@ -408,6 +408,12 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PORTFOLIO_STATUSES = ["active", "archived"] as const;
+export type PortfolioStatus = (typeof PORTFOLIO_STATUSES)[number];
+
+export const PIPELINE_STEP_KINDS = ["work", "review", "approval", "eval"] as const;
+export type PipelineStepKind = (typeof PIPELINE_STEP_KINDS)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 

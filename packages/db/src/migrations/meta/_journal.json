@@ -729,6 +729,27 @@
 			"when": 1700006180000,
 			"tag": "0103_company_id_equals_org_id",
 			"breakpoints": true
+		},
+		{
+			"idx": 104,
+			"version": "7",
+			"when": 1700006240000,
+			"tag": "0104_portfolios",
+			"breakpoints": true
+		},
+		{
+			"idx": 105,
+			"version": "7",
+			"when": 1700006300000,
+			"tag": "0105_pipelines",
+			"breakpoints": true
+		},
+		{
+			"idx": 106,
+			"version": "7",
+			"when": 1700006360000,
+			"tag": "0106_decision_scores",
+			"breakpoints": true
 		}
 	]
 }

@@ -3,6 +3,7 @@ import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
+import { portfolios } from "./portfolios.js";
 
 export const projects = pgTable(
   "projects",
@@ -10,6 +11,7 @@ export const projects = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     goalId: uuid("goal_id").references(() => goals.id),
+    portfolioId: uuid("portfolio_id").references(() => portfolios.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -27,5 +29,6 @@ export const projects = pgTable(
   },
   (table) => ({
     companyIdx: index("projects_company_idx").on(table.companyId),
+    portfolioIdx: index("projects_portfolio_idx").on(table.portfolioId),
   }),
 );

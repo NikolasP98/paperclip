@@ -496,6 +496,8 @@ export interface IssueExecutionDecision {
   actorUserId: string | null;
   outcome: IssueExecutionDecisionOutcome;
   body: string;
+  score?: number | null;
+  maxScore?: number | null;
   createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -507,6 +509,7 @@ export interface Issue {
   projectId: string | null;
   projectWorkspaceId: string | null;
   goalId: string | null;
+  pipelineId?: string | null;
   parentId: string | null;
   ancestors?: IssueAncestor[];
   title: string;

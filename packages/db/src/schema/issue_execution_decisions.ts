@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, numeric, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -16,6 +16,8 @@ export const issueExecutionDecisions = pgTable(
     actorUserId: text("actor_user_id"),
     outcome: text("outcome").notNull(),
     body: text("body").notNull(),
+    score: numeric("score", { mode: "number" }),
+    maxScore: numeric("max_score", { mode: "number" }),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
