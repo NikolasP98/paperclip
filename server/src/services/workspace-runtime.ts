@@ -1116,7 +1116,10 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
+  // A strategy-level repoRoot pins the worktree owner repo even when baseCwd
+  // resolves into a different git repo (e.g. an agent-level cwd under $HOME).
+  const configuredRepoRoot = asString(rawStrategy.repoRoot, "").trim();
+  const repoRoot = await resolveGitOwnerRepoRoot(configuredRepoRoot || input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,
