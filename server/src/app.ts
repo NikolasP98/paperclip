@@ -353,6 +353,9 @@ export async function createApp(
         companyId: githubBugsCompanyId,
         agentId: githubBugsAgentId,
         bugRepo: githubBugRepo,
+        projectId: process.env.GITHUB_BUGS_PROJECT_ID?.trim(),
+        reviewerAgentId: process.env.GITHUB_BUGS_REVIEWER_AGENT_ID?.trim(),
+        approverUserId: process.env.GITHUB_BUGS_APPROVER_USER_ID?.trim(),
       }),
     );
   }

@@ -1,7 +1,7 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { ISSUE_PRIORITIES, type IssuePriority } from "@paperclipai/shared";
+import { ISSUE_PRIORITIES, type IssueExecutionPolicy, type IssuePriority } from "@paperclipai/shared";
 import { issues, type Db } from "@paperclipai/db";
 import { logActivity } from "../services/activity-log.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -18,6 +18,40 @@ export interface GithubBugsDeps {
   agentId: string;
   /** only issues from this repo are ingested, e.g. "NikolasP98/minion_hub" */
   bugRepo: string;
+  /** project every ingested bug lands in (its workspace drives worktree provisioning) */
+  projectId?: string;
+  /** review-stage agent — when set, the fixer's "done" routes through this reviewer */
+  reviewerAgentId?: string;
+  /** approval-stage (HITL) user — final gate before an issue can complete */
+  approverUserId?: string;
+}
+
+/**
+ * Kanban process for bug issues: fix (assignee) → review (agent stage) →
+ * approval (user HITL stage). Stages are the runtime's native
+ * executionPolicy machine — requesting done advances the cursor and
+ * auto-wakes the next participant.
+ */
+export function buildBugExecutionPolicy(deps: GithubBugsDeps): IssueExecutionPolicy | undefined {
+  const stages: IssueExecutionPolicy["stages"] = [];
+  if (deps.reviewerAgentId) {
+    stages.push({
+      id: randomUUID(),
+      type: "review",
+      approvalsNeeded: 1,
+      participants: [{ id: randomUUID(), type: "agent", agentId: deps.reviewerAgentId }],
+    });
+  }
+  if (deps.approverUserId) {
+    stages.push({
+      id: randomUUID(),
+      type: "approval",
+      approvalsNeeded: 1,
+      participants: [{ id: randomUUID(), type: "user", userId: deps.approverUserId }],
+    });
+  }
+  if (stages.length === 0) return undefined;
+  return { mode: "normal", commentRequired: true, stages };
 }
 
 export function verifyGitHubSignature(
@@ -122,6 +156,7 @@ export async function handleGithubEvent(
   // ponytail: if deps.agentId (GITHUB_BUGS_AGENT_ID) is pending approval or
   // terminated, issueService(...).create's assertAssignableAgent check
   // throws → this delivery 500s. Operators must keep that agent active.
+  const executionPolicy = buildBugExecutionPolicy(deps);
   const created = await issueService(db).create(deps.companyId, {
     title: gh.title,
     description: `GitHub issue: ${gh.html_url}\n\n${gh.body ?? ""}`,
@@ -130,6 +165,9 @@ export async function handleGithubEvent(
     assigneeAgentId: deps.agentId,
     originKind: "github_issue",
     originId,
+    ...(deps.projectId ? { projectId: deps.projectId } : {}),
+    // issues.executionPolicy jsonb column is typed Record<string, unknown>
+    ...(executionPolicy ? { executionPolicy: executionPolicy as unknown as Record<string, unknown> } : {}),
   });
 
   await logActivity(db, {
