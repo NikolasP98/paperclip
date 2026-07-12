@@ -7,6 +7,7 @@ import {
   rankPipelineCandidates,
   type PipelineApplyTarget,
 } from "../services/pipelines.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
 function makePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
@@ -84,18 +85,33 @@ describe("compilePipeline", () => {
     }
   });
 
-  it("carries eval meta (kind/minScore/maxScore/rubric) on the compiled stage — pre-normalization only", () => {
+  it("carries eval meta (kind/minScore/maxScore/rubric) on the compiled stage, and it survives normalizeIssueExecutionPolicy (WP3)", () => {
     const pipeline = makePipeline({ steps: [workStep, evalStep] });
     const compiled = compilePipeline(pipeline);
     const [stage] = compiled.executionPolicy?.stages ?? [];
 
     expect(stage?.type).toBe("review");
-    // WP3 wires meta through normalizeIssueExecutionPolicy — until then it
-    // exists only on this compiled object, not on the IssueExecutionStage type.
-    const stageWithMeta = stage as typeof stage & {
-      meta?: { kind: string; minScore: number; maxScore: number; rubric: string };
-    };
-    expect(stageWithMeta?.meta).toEqual({
+    expect(stage?.meta).toEqual({
+      kind: "eval",
+      minScore: 7,
+      maxScore: 10,
+      rubric: "Score the diff for root-cause fixes.",
+    });
+
+    // meta is additive on IssueExecutionStage — normalizeIssueExecutionPolicy passes it
+    // through unchanged instead of stripping it (the round-trip an issue create/update
+    // hits via routes/issues.ts normalizeIssueExecutionPolicy(createBody.executionPolicy)).
+    // normalizeIssueExecutionPolicy validates participant ids as UUIDs (unlike the pure
+    // compilePipeline fixtures above, which use human-readable ids), so build the
+    // round-trip input with a real uuid participant.
+    const uuidEvalPipeline = makePipeline({
+      steps: [
+        workStep,
+        { ...evalStep, participant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" } },
+      ],
+    });
+    const normalized = normalizeIssueExecutionPolicy(compilePipeline(uuidEvalPipeline).executionPolicy);
+    expect(normalized?.stages[0]?.meta).toEqual({
       kind: "eval",
       minScore: 7,
       maxScore: 10,

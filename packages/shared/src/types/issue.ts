@@ -423,11 +423,19 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
   id: string;
 }
 
+export interface IssueExecutionStageMeta {
+  kind?: "eval" | string;
+  minScore?: number | null;
+  maxScore?: number | null;
+  rubric?: string | null;
+}
+
 export interface IssueExecutionStage {
   id: string;
   type: IssueExecutionStageType;
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
+  meta?: IssueExecutionStageMeta | null;
 }
 
 export interface IssueExecutionMonitorPolicy {

@@ -175,11 +175,19 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
   }
 });
 
+export const issueExecutionStageMetaSchema = z.object({
+  kind: z.string().optional(),
+  minScore: z.number().optional().nullable(),
+  maxScore: z.number().optional().nullable(),
+  rubric: z.string().max(4000).optional().nullable(),
+});
+
 export const issueExecutionStageSchema = z.object({
   id: z.string().uuid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
+  meta: issueExecutionStageMetaSchema.optional().nullable(),
 });
 
 export const issueExecutionMonitorPolicySchema = z.object({
@@ -441,6 +449,8 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  /** Score submitted alongside a `done` decision on an eval-kind execution stage (server/src/services/issue-execution-policy.ts). Ignored on non-eval stages. */
+  evalScore: z.number().finite().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

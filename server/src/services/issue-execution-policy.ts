@@ -50,11 +50,16 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /** Score submitted alongside a `done` request. Only consulted when the active stage is an eval stage (stage.meta?.kind === "eval"); ignored otherwise (spec risk #2). */
+  evalScore?: number | null;
 };
 
 type TransitionResult = {
   patch: Record<string, unknown>;
-  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body"> & {
+    score?: number | null;
+    maxScore?: number | null;
+  };
   workflowControlledAssignment?: boolean;
 };
 
@@ -369,6 +374,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
         type: stage.type,
         approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
+        ...(stage.meta ? { meta: stage.meta } : {}),
       };
     })
     .filter((stage): stage is NonNullable<typeof stage> => stage !== null);
@@ -695,8 +701,49 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       };
     }
 
+    const activeStageMeta = activeStage.meta ?? null;
+    const isEvalStage = activeStageMeta?.kind === "eval";
+    const evalScoreFields = isEvalStage
+      ? { score: input.evalScore ?? null, maxScore: activeStageMeta?.maxScore ?? null }
+      : {};
+
+    // Shared by the explicit "request changes" transition and the eval
+    // score-below-minScore bounce (§2.4) — same machine, same requirements.
+    const changesRequestedResult = (scoreFields: { score?: number | null; maxScore?: number | null } = {}): TransitionResult => {
+      if (!input.commentBody?.trim()) {
+        throw unprocessable("Requesting changes requires a comment");
+      }
+      if (!existingState?.returnAssignee) {
+        throw unprocessable("This execution stage has no return assignee");
+      }
+      patch.status = "in_progress";
+      Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+      patch.executionState = buildChangesRequestedState(existingState, activeStage);
+      return {
+        patch,
+        decision: {
+          stageId: activeStage.id,
+          stageType: activeStage.type,
+          outcome: "changes_requested",
+          body: input.commentBody.trim(),
+          ...scoreFields,
+        },
+        workflowControlledAssignment: true,
+      };
+    };
+
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
+        if (isEvalStage) {
+          if (input.evalScore == null) {
+            throw unprocessable("Eval stage requires a score (evalScore)");
+          }
+          const minScore = activeStageMeta?.minScore ?? -Infinity;
+          if (input.evalScore < minScore) {
+            return changesRequestedResult(evalScoreFields);
+          }
+        }
+
         if (!input.commentBody?.trim()) {
           throw unprocessable("Approving a review or approval stage requires a comment");
         }
@@ -715,6 +762,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
               stageType: activeStage.type,
               outcome: "approved",
               body: input.commentBody.trim(),
+              ...evalScoreFields,
             },
           };
         }
@@ -743,31 +791,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             stageType: activeStage.type,
             outcome: "approved",
             body: input.commentBody.trim(),
+            ...evalScoreFields,
           },
           workflowControlledAssignment: true,
         };
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
-        if (!input.commentBody?.trim()) {
-          throw unprocessable("Requesting changes requires a comment");
-        }
-        if (!existingState?.returnAssignee) {
-          throw unprocessable("This execution stage has no return assignee");
-        }
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
-        patch.executionState = buildChangesRequestedState(existingState, activeStage);
-        return {
-          patch,
-          decision: {
-            stageId: activeStage.id,
-            stageType: activeStage.type,
-            outcome: "changes_requested",
-            body: input.commentBody.trim(),
-          },
-          workflowControlledAssignment: true,
-        };
+        return changesRequestedResult();
       }
     }
 

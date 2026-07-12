@@ -186,6 +186,8 @@ type ExecutionStageWakeContext = {
   reviewRequest: ParsedExecutionState["reviewRequest"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
+  /** The active stage's meta (eval rubric/minScore/maxScore), so evaluator wakes see the rubric without an extra fetch. */
+  stageMeta: NormalizedExecutionPolicy["stages"][number]["meta"] | null;
 };
 type SuccessfulRunHandoffActivityRow = {
   entityId: string;
@@ -607,6 +609,7 @@ function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
   allowedActions: string[];
+  stageMeta?: ExecutionStageWakeContext["stageMeta"];
 }): ExecutionStageWakeContext {
   return {
     wakeRole: input.wakeRole,
@@ -617,6 +620,7 @@ function buildExecutionStageWakeContext(input: {
     reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
+    stageMeta: input.stageMeta ?? null,
   };
 }
 
@@ -909,9 +913,11 @@ function buildExecutionStageWakeup(input: {
   interruptedRunId: string | null;
   requestedByActorType: "user" | "agent";
   requestedByActorId: string;
+  nextPolicy?: NormalizedExecutionPolicy | null;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
+  const stageMeta = input.nextPolicy?.stages.find((stage) => stage.id === nextState.currentStageId)?.meta ?? null;
 
   if (nextState.status === "pending") {
     const agentId =
@@ -928,6 +934,7 @@ function buildExecutionStageWakeup(input: {
       state: nextState,
       wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
       allowedActions: ["approve", "request_changes"],
+      stageMeta,
     });
 
     return {
@@ -5075,6 +5082,7 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+      evalScore: req.body.evalScore === undefined ? undefined : (req.body.evalScore as number),
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -5172,6 +5180,8 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
+            score: decision.score ?? null,
+            maxScore: decision.maxScore ?? null,
             createdByRunId: actor.runId ?? null,
           });
 
@@ -5643,6 +5653,7 @@ export function issueRoutes(
       interruptedRunId,
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
+      nextPolicy: nextExecutionPolicy,
     });
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
@@ -6948,6 +6959,7 @@ export function issueRoutes(
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+        nextPolicy: currentExecutionPolicy,
       });
     } else {
       comment = await svc.addComment(id, req.body.body, {
