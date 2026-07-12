@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--comment TEXT] [--dry-run]
+  scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--eval-score NUMBER] [--comment TEXT] [--dry-run]
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
@@ -23,6 +23,10 @@ Examples:
 
   - Fixed the issue update helper
   MD
+
+  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done --eval-score 8 <<'MD'
+  Evaluation passed with 8/10.
+  MD
 EOF
 }
 
@@ -36,6 +40,8 @@ require_command() {
 issue_id="${PAPERCLIP_TASK_ID:-}"
 status=""
 comment_arg=""
+eval_score=""
+eval_score_set=0
 dry_run=0
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +56,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --comment)
       comment_arg="${2:-}"
+      shift 2
+      ;;
+    --eval-score)
+      eval_score="${2:-}"
+      eval_score_set=1
       shift 2
       ;;
     --dry-run)
@@ -73,6 +84,11 @@ if [[ -z "$issue_id" ]]; then
   exit 1
 fi
 
+if [[ "$eval_score_set" == "1" && ! "$eval_score" =~ ^-?([0-9]+([.][0-9]+)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]]; then
+  printf 'Invalid eval score: %s. Pass a finite number.\n' "$eval_score" >&2
+  exit 1
+fi
+
 comment=""
 if [[ -n "$comment_arg" ]]; then
   comment="$comment_arg"
@@ -86,9 +102,12 @@ payload="$(
   jq -nc \
     --arg status "$status" \
     --arg comment "$comment" \
+    --arg eval_score "$eval_score" \
+    --argjson eval_score_set "$eval_score_set" \
     '
       (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
+      (if $comment == "" then {} else {comment: $comment} end) +
+      (if $eval_score_set == 0 then {} else {evalScore: ($eval_score | tonumber)} end)
     '
 )"
 

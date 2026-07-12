@@ -136,7 +136,17 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+When completing an `eval` execution-policy stage, the same `done` update **must** include the numeric `evalScore`. Omitting it is rejected and the gate cannot record its decision or advance. Submit the evaluator's score with the helper rather than only mentioning it in the comment:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done --eval-score 8 <<'MD'
+Evaluation passed: 8/10.
+
+- Rubric findings and evidence go here.
+MD
+```
+
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `evalScore` (required with `done` on an eval stage).
 
 ### Status Quick Guide
 
