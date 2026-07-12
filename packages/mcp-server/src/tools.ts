@@ -5,6 +5,10 @@ import {
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueInputSchema,
+  createPipelineSchema,
+  createPortfolioSchema,
+  createProjectSchema,
+  PORTFOLIO_STATUSES,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
@@ -355,6 +359,59 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
         return client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}${qs}`);
       },
+    ),
+    makeTool(
+      "paperclipCreateProject",
+      "Create a project (optionally inside a portfolio via portfolioId)",
+      z.object({ companyId: companyIdOptional }).merge(createProjectSchema),
+      async ({ companyId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/projects`, { body }),
+    ),
+    makeTool(
+      "paperclipListPortfolios",
+      "List portfolios in a company (charter containers grouping projects)",
+      z.object({ companyId: companyIdOptional, status: z.enum(PORTFOLIO_STATUSES).optional() }),
+      async ({ companyId, status }) =>
+        client.requestJson(
+          "GET",
+          `/companies/${client.resolveCompanyId(companyId)}/portfolios${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+        ),
+    ),
+    makeTool(
+      "paperclipGetPortfolio",
+      "Get a portfolio by id — includes its objective, guardrails, and charter, which agents working under it must respect",
+      z.object({ portfolioId: z.string().uuid() }),
+      async ({ portfolioId }) => client.requestJson("GET", `/portfolios/${encodeURIComponent(portfolioId)}`),
+    ),
+    makeTool(
+      "paperclipCreatePortfolio",
+      "Create a portfolio (charter container: objective, guardrails, vision/mission)",
+      z.object({ companyId: companyIdOptional }).merge(createPortfolioSchema),
+      async ({ companyId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/portfolios`, { body }),
+    ),
+    makeTool(
+      "paperclipPortfolioMetrics",
+      "Portfolio health metrics: per-project + rollup issue counts, cycle time, changes-requested rate, eval scores, stuck issues, active workspaces",
+      z.object({ portfolioId: z.string().uuid() }),
+      async ({ portfolioId }) => client.requestJson("GET", `/portfolios/${encodeURIComponent(portfolioId)}/metrics`),
+    ),
+    makeTool(
+      "paperclipListPipelines",
+      "List workflow pipelines for a company (optionally filtered to a project)",
+      z.object({ companyId: companyIdOptional, projectId: z.string().uuid().optional() }),
+      async ({ companyId, projectId }) =>
+        client.requestJson(
+          "GET",
+          `/companies/${client.resolveCompanyId(companyId)}/pipelines${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+        ),
+    ),
+    makeTool(
+      "paperclipCreatePipeline",
+      "Create a workflow pipeline: ordered steps (work -> review/eval/approval gates), each owned by an agent or user; new issues matching its trigger get the pipeline applied",
+      z.object({ companyId: companyIdOptional }).merge(createPipelineSchema),
+      async ({ companyId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/pipelines`, { body }),
     ),
     makeTool(
       "paperclipGetIssueWorkspaceRuntime",

@@ -100,6 +100,7 @@ export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema
 const projectFields = {
   /** @deprecated Use goalIds instead */
   goalId: z.string().uuid().optional().nullable(),
+  portfolioId: z.string().uuid().optional().nullable(),
   goalIds: z.array(z.string().uuid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
