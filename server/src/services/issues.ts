@@ -1953,6 +1953,7 @@ const issueListSelect = {
   // never participants or the full execution_state (list consumers include
   // low-trust surfaces; the id alone leaks nothing actionable).
   currentStageId: sql<string | null>`${issues.executionState}->>'currentStageId'`,
+  currentStageIndex: sql<number | null>`(${issues.executionState}->>'currentStageIndex')::int`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
   monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
   monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
