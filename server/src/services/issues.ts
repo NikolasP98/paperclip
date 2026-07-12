@@ -1949,6 +1949,10 @@ const issueListSelect = {
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
+  // Step derivation for pipeline kanban columns: the current stage id only —
+  // never participants or the full execution_state (list consumers include
+  // low-trust surfaces; the id alone leaks nothing actionable).
+  currentStageId: sql<string | null>`${issues.executionState}->>'currentStageId'`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
   monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
   monitorLastTriggeredAt: issues.monitorLastTriggeredAt,

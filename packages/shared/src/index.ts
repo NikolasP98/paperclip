@@ -1445,9 +1445,20 @@ export {
   pipelineStepSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
+  createPipelineSchema,
+  updatePipelineSchema,
   type PipelineStepInput,
   type PipelineTriggerInput,
+  type CreatePipeline,
+  type UpdatePipeline,
 } from "./validators/pipeline.js";
+
+export {
+  createPortfolioSchema,
+  updatePortfolioSchema,
+  type CreatePortfolio,
+  type UpdatePortfolio,
+} from "./validators/portfolio.js";
 
 export {
   adapterRegistryEntrySchema,

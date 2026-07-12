@@ -529,9 +529,20 @@ export {
   pipelineStepSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
+  createPipelineSchema,
+  updatePipelineSchema,
   type PipelineStepInput,
   type PipelineTriggerInput,
+  type CreatePipeline,
+  type UpdatePipeline,
 } from "./pipeline.js";
+
+export {
+  createPortfolioSchema,
+  updatePortfolioSchema,
+  type CreatePortfolio,
+  type UpdatePortfolio,
+} from "./portfolio.js";
 
 export {
   jsonSchemaSchema,

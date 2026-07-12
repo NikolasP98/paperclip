@@ -66,3 +66,25 @@ export const pipelineStepsSchema = z
 
 export type PipelineStepInput = z.infer<typeof pipelineStepSchema>;
 export type PipelineTriggerInput = z.infer<typeof pipelineTriggerSchema>;
+
+export const createPipelineSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().optional().nullable(),
+  projectId: z.string().uuid().optional().nullable(),
+  trigger: pipelineTriggerSchema.optional().nullable(),
+  steps: pipelineStepsSchema,
+  sortOrder: z.number().int().optional(),
+});
+
+export type CreatePipeline = z.infer<typeof createPipelineSchema>;
+
+export const updatePipelineSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().optional().nullable(),
+  trigger: pipelineTriggerSchema.optional().nullable(),
+  steps: pipelineStepsSchema.optional(),
+  sortOrder: z.number().int().optional(),
+  archivedAt: z.coerce.date().optional().nullable(),
+});
+
+export type UpdatePipeline = z.infer<typeof updatePipelineSchema>;

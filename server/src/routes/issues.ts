@@ -6065,6 +6065,23 @@ export function issueRoutes(
     res.json(result);
   });
 
+  // Stage decision ledger (approved / changes_requested per gate, with eval scores).
+  router.get("/issues/:id/execution-decisions", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const rows = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, id))
+      .orderBy(issueExecutionDecisions.createdAt);
+    res.json(rows);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
