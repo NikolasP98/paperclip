@@ -20,6 +20,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { githubBugRoutes } from "./routes/github-bugs.js";
+import { seedGithubBugsPipeline } from "./services/pipelines.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
@@ -344,6 +345,9 @@ export async function createApp(
   const githubBugsAgentId = process.env.GITHUB_BUGS_AGENT_ID?.trim();
   const githubBugRepo = process.env.GITHUB_BUG_REPO?.trim();
   if (githubBugsSecret && githubBugsCompanyId && githubBugsAgentId && githubBugRepo) {
+    const githubBugsProjectId = process.env.GITHUB_BUGS_PROJECT_ID?.trim();
+    const githubBugsReviewerAgentId = process.env.GITHUB_BUGS_REVIEWER_AGENT_ID?.trim();
+    const githubBugsApproverUserId = process.env.GITHUB_BUGS_APPROVER_USER_ID?.trim();
     app.use(
       "/api",
       githubBugRoutes(db, {
@@ -353,11 +357,24 @@ export async function createApp(
         companyId: githubBugsCompanyId,
         agentId: githubBugsAgentId,
         bugRepo: githubBugRepo,
-        projectId: process.env.GITHUB_BUGS_PROJECT_ID?.trim(),
-        reviewerAgentId: process.env.GITHUB_BUGS_REVIEWER_AGENT_ID?.trim(),
-        approverUserId: process.env.GITHUB_BUGS_APPROVER_USER_ID?.trim(),
+        projectId: githubBugsProjectId,
+        reviewerAgentId: githubBugsReviewerAgentId,
+        approverUserId: githubBugsApproverUserId,
       }),
     );
+    // Idempotent, zero-downtime cutover: seeds a `github-bugs-default`
+    // pipeline row from the legacy env vars the first time they're seen, so
+    // resolvePipeline picks it up on the next webhook delivery. Fire-and-
+    // forget — must never block boot.
+    if (githubBugsReviewerAgentId || githubBugsApproverUserId) {
+      seedGithubBugsPipeline(db, {
+        companyId: githubBugsCompanyId,
+        projectId: githubBugsProjectId,
+        agentId: githubBugsAgentId,
+        reviewerAgentId: githubBugsReviewerAgentId,
+        approverUserId: githubBugsApproverUserId,
+      }).catch(console.error);
+    }
   }
   const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
   if (HUB_PAPERCLIP_SHARED_SECRET) {

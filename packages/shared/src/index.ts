@@ -102,6 +102,8 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  PORTFOLIO_STATUSES,
+  PIPELINE_STEP_KINDS,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -226,6 +228,8 @@ export {
   type GoalLevel,
   type GoalStatus,
   type ProjectStatus,
+  type PortfolioStatus,
+  type PipelineStepKind,
   type EnvironmentDriver,
   type EnvironmentStatus,
   type EnvironmentLeaseStatus,
@@ -1432,6 +1436,18 @@ export type {
 } from "./environment-support.js";
 
 export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
+
+export type { Portfolio } from "./types/portfolio.js";
+export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./types/pipeline.js";
+
+export {
+  pipelineStepParticipantSchema,
+  pipelineStepSchema,
+  pipelineTriggerSchema,
+  pipelineStepsSchema,
+  type PipelineStepInput,
+  type PipelineTriggerInput,
+} from "./validators/pipeline.js";
 
 export {
   adapterRegistryEntrySchema,

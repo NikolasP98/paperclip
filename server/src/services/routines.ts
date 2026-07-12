@@ -52,6 +52,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
+import { applyPipelineToCreateInput, resolvePipeline, type PipelineApplyTarget } from "./pipelines.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -1302,6 +1303,21 @@ export function routineService(
           return updated ?? createdRun;
         }
 
+        // Pipelines (opt-in, zero behavior change when nothing matches): only
+        // routines with no explicit assigneeAgentId ever fall through to
+        // resolution — a routine-configured assignee always wins.
+        const routinePipelineInput: PipelineApplyTarget = { assigneeAgentId };
+        const routinePipeline = !assigneeAgentId
+          ? await resolvePipeline(txDb, {
+              companyId: input.routine.companyId,
+              projectId: projectId ?? null,
+              priority: input.routine.priority,
+            })
+          : null;
+        const appliedRoutinePipeline = routinePipeline
+          ? applyPipelineToCreateInput(routinePipeline, routinePipelineInput)
+          : routinePipelineInput;
+
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
@@ -1311,7 +1327,9 @@ export function routineService(
             description,
             status: "todo",
             priority: input.routine.priority,
-            assigneeAgentId,
+            assigneeAgentId: appliedRoutinePipeline.assigneeAgentId ?? null,
+            ...(appliedRoutinePipeline.executionPolicy ? { executionPolicy: appliedRoutinePipeline.executionPolicy } : {}),
+            ...(appliedRoutinePipeline.pipelineId ? { pipelineId: appliedRoutinePipeline.pipelineId } : {}),
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
             originKind: issueOriginKind,

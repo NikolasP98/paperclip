@@ -525,6 +525,15 @@ export {
 } from "./access.js";
 
 export {
+  pipelineStepParticipantSchema,
+  pipelineStepSchema,
+  pipelineTriggerSchema,
+  pipelineStepsSchema,
+  type PipelineStepInput,
+  type PipelineTriggerInput,
+} from "./pipeline.js";
+
+export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,

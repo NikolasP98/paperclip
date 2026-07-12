@@ -6,6 +6,7 @@ import { issues, type Db } from "@paperclipai/db";
 import { logActivity } from "../services/activity-log.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
+import { applyPipelineToCreateInput, resolvePipeline, type PipelineApplyTarget } from "../services/pipelines.js";
 import type { RepoSandboxService } from "../services/repo-sandbox.js";
 
 export interface GithubBugsDeps {
@@ -31,6 +32,12 @@ export interface GithubBugsDeps {
  * approval (user HITL stage). Stages are the runtime's native
  * executionPolicy machine — requesting done advances the cursor and
  * auto-wakes the next participant.
+ *
+ * SUPERSEDED by pipelines (server/src/services/pipelines.ts): handleGithubEvent
+ * now resolves an executionPolicy via resolvePipeline/applyPipelineToCreateInput
+ * instead of calling this directly. Kept exported for the legacy env-var-driven
+ * seed path's test coverage (github-bugs-execution-policy.test.ts) and as a
+ * reference for the shape seedGithubBugsPipeline's default steps compile to.
  */
 export function buildBugExecutionPolicy(deps: GithubBugsDeps): IssueExecutionPolicy | undefined {
   const stages: IssueExecutionPolicy["stages"] = [];
@@ -156,19 +163,40 @@ export async function handleGithubEvent(
   // ponytail: if deps.agentId (GITHUB_BUGS_AGENT_ID) is pending approval or
   // terminated, issueService(...).create's assertAssignableAgent check
   // throws → this delivery 500s. Operators must keep that agent active.
-  const executionPolicy = buildBugExecutionPolicy(deps);
-  const created = await issueService(db).create(deps.companyId, {
+  const priority = pickSeverity(labels);
+  const baseInput: PipelineApplyTarget & {
+    title: string;
+    description: string;
+    priority: IssuePriority;
+    status: string;
+    originKind: string;
+    originId: string;
+    projectId?: string;
+  } = {
     title: gh.title,
     description: `GitHub issue: ${gh.html_url}\n\n${gh.body ?? ""}`,
-    priority: pickSeverity(labels),
+    priority,
     status: "todo",
-    assigneeAgentId: deps.agentId,
     originKind: "github_issue",
     originId,
     ...(deps.projectId ? { projectId: deps.projectId } : {}),
-    // issues.executionPolicy jsonb column is typed Record<string, unknown>
-    ...(executionPolicy ? { executionPolicy: executionPolicy as unknown as Record<string, unknown> } : {}),
+  };
+  const pipeline = await resolvePipeline(db, {
+    companyId: deps.companyId,
+    projectId: deps.projectId ?? null,
+    originKind: "github_issue",
+    labels,
+    priority,
   });
+  // pipeline resolves to the seeded github-bugs-default pipeline (or an
+  // operator-authored override) — zero behavior change when nothing matches:
+  // fall back to the pre-pipelines fixed assignee/no-policy shape.
+  const pipelineInput = pipeline ? applyPipelineToCreateInput(pipeline, baseInput) : baseInput;
+  const created = await issueService(db).create(deps.companyId, {
+    ...pipelineInput,
+    assigneeAgentId: pipelineInput.assigneeAgentId ?? deps.agentId,
+    // issues.executionPolicy jsonb column is typed Record<string, unknown>
+  } as Parameters<ReturnType<typeof issueService>["create"]>[1]);
 
   await logActivity(db, {
     companyId: deps.companyId,

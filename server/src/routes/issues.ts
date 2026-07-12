@@ -124,6 +124,12 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  applyPipelineToCreateInput,
+  getPipelineById,
+  resolvePipeline,
+  type PipelineApplyTarget,
+} from "../services/pipelines.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -4372,17 +4378,56 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // Pipelines (opt-in, zero behavior change when nothing matches): only
+    // spend the lookup when the caller didn't already pin an explicit
+    // executionPolicy or assignee. Label-based trigger matching is skipped
+    // here — labelIds -> label-name resolution would cost an extra query on
+    // every issue create; matching narrows to pipelineId/projectId/priority.
+    let pipelineId: string | null = null;
+    let pipelineAssigneeAgentId: string | undefined;
+    let pipelineAssigneeAdapterOverrides: Record<string, unknown> | undefined;
+    let pipelineExecutionPolicy: typeof executionPolicy = executionPolicy;
+    const hasExplicitAssignee = Boolean(createBody.assigneeAgentId || createBody.assigneeUserId);
+    if (!executionPolicy && !hasExplicitAssignee) {
+      const resolvedPipeline = createBody.pipelineId
+        ? await getPipelineById(db, companyId, createBody.pipelineId)
+        : await resolvePipeline(db, {
+            companyId,
+            projectId: createBody.projectId ?? null,
+            priority: createBody.priority,
+          });
+      if (resolvedPipeline) {
+        const pipelineApplyInput: PipelineApplyTarget = {
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          assigneeAdapterOverrides: (createBody.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null,
+          executionPolicy: null,
+        };
+        const applied = applyPipelineToCreateInput(resolvedPipeline, pipelineApplyInput);
+        pipelineId = applied.pipelineId ?? resolvedPipeline.id;
+        pipelineAssigneeAgentId = applied.assigneeAgentId ?? undefined;
+        pipelineAssigneeAdapterOverrides = applied.assigneeAdapterOverrides ?? undefined;
+        if (applied.executionPolicy) {
+          pipelineExecutionPolicy = applied.executionPolicy as unknown as typeof executionPolicy;
+        }
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
       projectId: createBody.projectId ?? null,
-      executionPolicy,
+      executionPolicy: pipelineExecutionPolicy,
     }, actor);
     const issue = await svc.create(companyId, {
       ...createBody,
       id: issueId,
-      executionPolicy,
+      executionPolicy: pipelineExecutionPolicy,
+      ...(pipelineAssigneeAgentId ? { assigneeAgentId: pipelineAssigneeAgentId } : {}),
+      ...(pipelineAssigneeAdapterOverrides ? { assigneeAdapterOverrides: pipelineAssigneeAdapterOverrides } : {}),
+      ...(pipelineId ? { pipelineId } : {}),
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
