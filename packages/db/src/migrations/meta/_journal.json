@@ -771,6 +771,13 @@
 			"when": 1700006540000,
 			"tag": "0109_pipeline_step_identity",
 			"breakpoints": true
+		},
+		{
+			"idx": 110,
+			"version": "7",
+			"when": 1700006600000,
+			"tag": "0110_project_metadata",
+			"breakpoints": true
 		}
 	]
 }

@@ -110,6 +110,24 @@ const projectFields = {
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
+  metadata: z
+    .object({
+      minionSeedKey: z.string().trim().min(1).optional(),
+      repositoryKey: z.string().trim().min(1).optional(),
+      groupKey: z.string().trim().min(1).optional(),
+      routing: z
+        .object({
+          scopes: z.array(z.string().trim().min(1)).optional(),
+          pathPrefixes: z.array(z.string().trim().min(1)).optional(),
+          isRepositoryDefault: z.boolean().optional(),
+          intakeFallback: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .catchall(z.unknown())
+    .optional()
+    .nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };

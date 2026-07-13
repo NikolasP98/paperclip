@@ -75,9 +75,31 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+/** Stable presentation and routing hints carried by seeded portfolio projects. */
+export interface ProjectRoutingMetadata {
+  scopes?: string[];
+  pathPrefixes?: string[];
+  isRepositoryDefault?: boolean;
+  intakeFallback?: boolean;
+}
+
+/**
+ * Extensible project metadata. Repository/group keys are data contracts, not
+ * display-name conventions, so clients can group projects without parsing
+ * operator-editable names.
+ */
+export interface ProjectMetadata extends Record<string, unknown> {
+  minionSeedKey?: string;
+  repositoryKey?: string;
+  groupKey?: string;
+  routing?: ProjectRoutingMetadata;
+}
+
 export interface Project {
   id: string;
   companyId: string;
+  /** Present on current API responses; optional for older plugin/UI fixtures. */
+  portfolioId?: string | null;
   urlKey: string;
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;
@@ -91,6 +113,8 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
+  /** Stable grouping/routing hints when configured. */
+  metadata?: ProjectMetadata | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

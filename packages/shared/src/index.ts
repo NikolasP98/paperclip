@@ -447,6 +447,8 @@ export type {
   ProjectCodebaseOrigin,
   ProjectGoalRef,
   ProjectManagedByPlugin,
+  ProjectMetadata,
+  ProjectRoutingMetadata,
   ProjectWorkspace,
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
