@@ -54,7 +54,10 @@ export interface MaterializeStageTaskInput {
 
 export interface IssuePipelineOrchestratorRepository {
   /** Must serialize operations for one run and wrap all writes in one transaction. */
-  withRunLock<T>(runId: string, operation: () => Promise<T>): Promise<T>;
+  withRunLock<T>(
+    runId: string,
+    operation: (repository: IssuePipelineOrchestratorRepository) => Promise<T>,
+  ): Promise<T>;
   createRunIfAbsent(input: {
     id: string;
     companyId: string;
@@ -182,12 +185,13 @@ export function issuePipelineOrchestrator(
   const createId = options.createId ?? randomUUID;
 
   async function materializeStage(
+    stageRepository: IssuePipelineOrchestratorRepository,
     run: IssuePipelineRun,
     stage: PipelineStep,
     attempt: number,
   ): Promise<IssuePipelineStageTask> {
     const materializationKey = stageMaterializationKey(run.id, stage.key, attempt);
-    const { task, created } = await repository.materializeStageTask({
+    const { task } = await stageRepository.materializeStageTask({
       runId: run.id,
       companyId: run.companyId,
       selectedProjectId: run.selectedProjectId,
@@ -198,34 +202,35 @@ export function issuePipelineOrchestrator(
       title: `[${stage.label}] ${run.pipelineSnapshot.name} (attempt ${attempt})`,
       description: taskDescription(run, stage, attempt),
     });
-    if (created) {
-      await repository.appendEventOnce({
-        runId: run.id,
-        companyId: run.companyId,
-        issueId: run.issueId,
-        eventKey: `stage-created:${stage.key}:${attempt}`,
-        eventType: "stage_created",
-        childIssueId: task.issueId,
-        stepKey: stage.key,
-        attempt,
-      });
-    }
+    // Always claim the semantic event. This repairs a legacy/interrupted child
+    // materialization that exists without its event while remaining idempotent.
+    await stageRepository.appendEventOnce({
+      runId: run.id,
+      companyId: run.companyId,
+      issueId: run.issueId,
+      eventKey: `stage-created:${stage.key}:${attempt}`,
+      eventType: "stage_created",
+      childIssueId: task.issueId,
+      stepKey: stage.key,
+      attempt,
+    });
     return task;
   }
 
   async function blockRun(
+    stageRepository: IssuePipelineOrchestratorRepository,
     run: IssuePipelineRun,
     reason: string,
     task: IssuePipelineStageTask,
   ): Promise<IssuePipelineRun> {
-    const blocked = await repository.setRunBlocked(run.id, reason);
-    await repository.setMainIssueStatus({
+    const blocked = await stageRepository.setRunBlocked(run.id, reason);
+    await stageRepository.setMainIssueStatus({
       companyId: run.companyId,
       issueId: run.issueId,
       status: "blocked",
       reason,
     });
-    await repository.appendEventOnce({
+    await stageRepository.appendEventOnce({
       runId: run.id,
       companyId: run.companyId,
       issueId: run.issueId,
@@ -259,10 +264,10 @@ export function issuePipelineOrchestrator(
         currentStepKey: firstStage.key,
       });
 
-      return repository.withRunLock(claimed.run.id, async () => {
-        const run = (await repository.getRun(claimed.run.id)) ?? claimed.run;
+      return repository.withRunLock(claimed.run.id, async (stageRepository) => {
+        const run = (await stageRepository.getRun(claimed.run.id)) ?? claimed.run;
         const frozenFirstStage = stageByKey(run, run.pipelineSnapshot.steps[0]!.key);
-        await repository.appendEventOnce({
+        await stageRepository.appendEventOnce({
           runId: run.id,
           companyId: run.companyId,
           issueId: run.issueId,
@@ -276,17 +281,17 @@ export function issuePipelineOrchestrator(
         });
         // Replaying start repairs a crash between the run claim and its first
         // event/task without duplicating either write.
-        const stageTask = await materializeStage(run, frozenFirstStage, 1);
+        const stageTask = await materializeStage(stageRepository, run, frozenFirstStage, 1);
         return { run, stageTask, created: claimed.created };
       });
     },
 
     completeStageTask: async (input: CompleteStageTaskInput): Promise<IssuePipelineRun> =>
-      repository.withRunLock(input.runId, async () => {
-        const run = await repository.getRun(input.runId);
+      repository.withRunLock(input.runId, async (stageRepository) => {
+        const run = await stageRepository.getRun(input.runId);
         if (!run) throw new Error(`pipeline run not found: ${input.runId}`);
 
-        const tasks = await repository.listStageTasks(run.id);
+        const tasks = await stageRepository.listStageTasks(run.id);
         const task = tasks.find((candidate) => candidate.id === input.stageTaskId);
         if (!task) throw new Error(`stage task ${input.stageTaskId} does not belong to run ${run.id}`);
         const stage = stageByKey(run, task.stageKey);
@@ -297,7 +302,7 @@ export function issuePipelineOrchestrator(
 
         // The task id, rather than a callback-supplied token, is the completion claim.
         // A second callback for the same child is therefore harmless even after the run advanced.
-        const claimed = await repository.appendEventOnce({
+        const claimed = await stageRepository.appendEventOnce({
           runId: run.id,
           companyId: run.companyId,
           issueId: run.issueId,
@@ -322,29 +327,35 @@ export function issuePipelineOrchestrator(
         }
 
         if (input.terminalStatus === "blocked") {
-          return blockRun(run, input.summary?.trim() || `${task.stageKey} is blocked`, task);
+          return blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} is blocked`, task);
         }
         if (input.terminalStatus === "cancelled") {
-          return blockRun(run, input.summary?.trim() || `${task.stageKey} was cancelled`, task);
+          return blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} was cancelled`, task);
         }
 
         if (failed) {
           if (!stage.onFailStepKey) {
-            return blockRun(run, input.summary?.trim() || `${stage.label} failed without a retry route`, task);
+            return blockRun(
+              stageRepository,
+              run,
+              input.summary?.trim() || `${stage.label} failed without a retry route`,
+              task,
+            );
           }
           const retryStage = stageByKey(run, stage.onFailStepKey);
           const completedAttempts = stageAttempt(tasks, retryStage.key);
           const maxAttempts = stage.maxAttempts ?? 1;
           if (completedAttempts >= maxAttempts) {
             return blockRun(
+              stageRepository,
               run,
               `${stage.label} failed and ${retryStage.label} exhausted ${maxAttempts} attempts`,
               task,
             );
           }
           const nextAttempt = completedAttempts + 1;
-          const advanced = await repository.setRunCursor(run.id, retryStage.key);
-          await repository.appendEventOnce({
+          const advanced = await stageRepository.setRunCursor(run.id, retryStage.key);
+          await stageRepository.appendEventOnce({
             runId: run.id,
             companyId: run.companyId,
             issueId: run.issueId,
@@ -357,19 +368,19 @@ export function issuePipelineOrchestrator(
             score: input.score ?? null,
             maxScore: input.maxScore ?? null,
           });
-          await materializeStage(advanced, retryStage, nextAttempt);
+          await materializeStage(stageRepository, advanced, retryStage, nextAttempt);
           return advanced;
         }
 
         const followingStage = nextStage(run, stage.key);
         if (!followingStage) {
-          const completed = await repository.setRunCompleted(run.id);
-          await repository.setMainIssueStatus({
+          const completed = await stageRepository.setRunCompleted(run.id);
+          await stageRepository.setMainIssueStatus({
             companyId: run.companyId,
             issueId: run.issueId,
             status: "done",
           });
-          await repository.appendEventOnce({
+          await stageRepository.appendEventOnce({
             runId: run.id,
             companyId: run.companyId,
             issueId: run.issueId,
@@ -383,8 +394,8 @@ export function issuePipelineOrchestrator(
         }
 
         const attempt = stageAttempt(tasks, followingStage.key) + 1;
-        const advanced = await repository.setRunCursor(run.id, followingStage.key);
-        await materializeStage(advanced, followingStage, attempt);
+        const advanced = await stageRepository.setRunCursor(run.id, followingStage.key);
+        await materializeStage(stageRepository, advanced, followingStage, attempt);
         return advanced;
       }),
   };

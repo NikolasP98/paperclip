@@ -65,6 +65,7 @@ export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
 export { agentHarnessService, captureDecisionLearningSignal } from "./agent-harness.js";
 export { issuePipelineOrchestrator } from "./issue-pipeline-orchestrator.js";
+export { issuePipelineOrchestratorRepository } from "./issue-pipeline-repository.js";
 export { resolveProjectRoute, classificationLabels } from "./project-routing.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";

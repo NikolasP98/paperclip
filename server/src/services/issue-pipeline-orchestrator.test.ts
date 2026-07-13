@@ -67,8 +67,11 @@ class MemoryRepository implements IssuePipelineOrchestratorRepository {
   eventKeys = new Set<string>();
   mainIssueStatuses: Array<{ status: "blocked" | "done"; reason?: string | null }> = [];
 
-  async withRunLock<T>(_runId: string, operation: () => Promise<T>): Promise<T> {
-    return operation();
+  async withRunLock<T>(
+    _runId: string,
+    operation: (repository: IssuePipelineOrchestratorRepository) => Promise<T>,
+  ): Promise<T> {
+    return operation(this);
   }
 
   async createRunIfAbsent(input: Parameters<IssuePipelineOrchestratorRepository["createRunIfAbsent"]>[0]) {
