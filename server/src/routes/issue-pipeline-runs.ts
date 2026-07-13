@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { issuePipelineEvents, issuePipelineRuns, issues, pipelines, type Db } from "@paperclipai/db";
 import type { IssuePipelineSnapshot, PipelineStep, PipelineTrigger } from "@paperclipai/shared";
@@ -79,11 +79,50 @@ export function issuePipelineRunRoutes(db: Db) {
   });
 
   router.get("/issues/:issueId/pipeline-run", async (req, res) => {
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, req.params.issueId as string))
+      .limit(1);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const [run] = issue.originKind === "pipeline_step" && issue.originId
+      ? await db
+        .select()
+        .from(issuePipelineRuns)
+        .where(
+          and(
+            eq(issuePipelineRuns.id, issue.originId),
+            eq(issuePipelineRuns.companyId, issue.companyId),
+          ),
+        )
+        .limit(1)
+      : await db
+        .select()
+        .from(issuePipelineRuns)
+        .where(
+          and(
+            eq(issuePipelineRuns.issueId, issue.id),
+            eq(issuePipelineRuns.companyId, issue.companyId),
+          ),
+        )
+        .orderBy(desc(issuePipelineRuns.createdAt))
+        .limit(1);
+    if (!run) {
+      res.status(404).json({ error: "Pipeline run not found" });
+      return;
+    }
+    res.json(run);
+  });
+
+  router.get("/issue-pipeline-runs/:id", async (req, res) => {
     const [run] = await db
       .select()
       .from(issuePipelineRuns)
-      .where(eq(issuePipelineRuns.issueId, req.params.issueId as string))
-      .orderBy(desc(issuePipelineRuns.createdAt))
+      .where(eq(issuePipelineRuns.id, req.params.id as string))
       .limit(1);
     if (!run) {
       res.status(404).json({ error: "Pipeline run not found" });

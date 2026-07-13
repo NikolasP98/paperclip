@@ -2,12 +2,16 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentHarnessRevisions,
   agents,
   activityLog,
   companies,
   createDb,
+  heartbeatRuns,
+  issuePipelineEvents,
   issuePipelineRuns,
   issues,
+  labels,
   pipelines,
   portfolios,
   projects,
@@ -17,7 +21,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { handleGithubEvent, type GithubBugsDeps } from "../routes/github-bugs.js";
-import { PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID } from "../services/github-stage-task-intake.js";
+import {
+  finalizeGithubClassifierHeartbeatById,
+  PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID,
+  reconcileGithubClassifierPipelineRun,
+} from "../services/github-stage-task-intake.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,13 +54,15 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(labels);
     await db.delete(pipelines);
     await db.delete(projects);
     await db.delete(portfolios);
     await db.delete(agents);
     await db.delete(companies);
-    wakeup.mockClear();
+    wakeup.mockReset().mockResolvedValue(null);
     deps.stageTaskIntake = undefined;
   });
 
@@ -95,6 +105,111 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
         html_url: `https://github.com/NikolasP98/minion_hub/issues/${number}`,
         labels: [{ name: "bug" }, { name: "high" }, { name: "agent" }],
       },
+    };
+  }
+
+  async function seedAsyncStageTaskIntake() {
+    const seeded = await seedCompanyAndAgent();
+    companyId = seeded.newCompanyId;
+    agentId = seeded.newAgentId;
+    deps.companyId = companyId;
+    deps.agentId = agentId;
+    const classifierAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: classifierAgentId,
+      companyId,
+      name: "IssueClassifier",
+      role: "general",
+      status: "active",
+      reportsTo: null,
+      adapterType: "minion_drone",
+      adapterConfig: { droneId: PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const harnessRevisionId = randomUUID();
+    await db.insert(agentHarnessRevisions).values({
+      id: harnessRevisionId,
+      companyId,
+      agentId: classifierAgentId,
+      revisionNumber: 1,
+      contentHash: `classifier-${harnessRevisionId}`,
+      snapshot: { role: "classifier", revision: 1 },
+      performanceSnapshot: {},
+      source: "test",
+    });
+    const portfolioId = randomUUID();
+    const intakeProjectId = randomUUID();
+    const workforceProjectId = randomUUID();
+    const pipelineId = randomUUID();
+    await db.insert(portfolios).values({ id: portfolioId, companyId, name: "MINION Code" });
+    await db.insert(projects).values([
+      { id: intakeProjectId, companyId, portfolioId, name: "Portfolio Intake" },
+      { id: workforceProjectId, companyId, portfolioId, name: "Workforce / Projects" },
+    ]);
+    await db.insert(pipelines).values({
+      id: pipelineId,
+      companyId,
+      name: "Repository delivery",
+      executionMode: "stage_tasks",
+      trigger: { originKinds: ["github_issue"] },
+      steps: [
+        {
+          key: "plan",
+          kind: "work",
+          label: "Plan",
+          participant: { type: "agent", agentId },
+        },
+      ],
+    });
+    deps.stageTaskIntake = {
+      config: {
+        pipelineId,
+        intakeProjectId,
+        classifierAgentId,
+        minimumConfidence: 0.7,
+        routes: [
+          {
+            key: "portfolio-intake",
+            name: "Portfolio Intake",
+            projectId: intakeProjectId,
+            repository: "cross-repo",
+            repositories: ["*"],
+            scopes: [],
+          },
+          {
+            key: "hub-workforce",
+            name: "Workforce / Projects",
+            projectId: workforceProjectId,
+            group: "minion-hub",
+            repository: "minion-hub",
+            repositories: ["NikolasP98/minion_hub"],
+            scopes: ["workforce"],
+          },
+        ],
+      },
+    };
+    wakeup.mockImplementation(async (wokenAgentId, options) => {
+      return db
+        .insert(heartbeatRuns)
+        .values({
+          companyId,
+          agentId: wokenAgentId,
+          harnessRevisionId: wokenAgentId === classifierAgentId ? harnessRevisionId : null,
+          invocationSource: options.source ?? "assignment",
+          triggerDetail: options.triggerDetail ?? "system",
+          status: "queued",
+          contextSnapshot: options.contextSnapshot ?? {},
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    });
+    return {
+      classifierAgentId,
+      harnessRevisionId,
+      intakeProjectId,
+      workforceProjectId,
+      pipelineId,
     };
   }
 
@@ -198,72 +313,8 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
     expect((await handleGithubEvent(db, deps, "issues", ev)).action).toBe("ignored");
   });
 
-  it("classifies, deterministically routes, and materializes one stage-task run across webhook retries", async () => {
-    const seeded = await seedCompanyAndAgent();
-    companyId = seeded.newCompanyId;
-    agentId = seeded.newAgentId;
-    deps.companyId = companyId;
-    deps.agentId = agentId;
-    const portfolioId = randomUUID();
-    const intakeProjectId = randomUUID();
-    const workforceProjectId = randomUUID();
-    const pipelineId = randomUUID();
-    await db.insert(portfolios).values({ id: portfolioId, companyId, name: "MINION Code" });
-    await db.insert(projects).values([
-      { id: intakeProjectId, companyId, portfolioId, name: "Portfolio Intake" },
-      { id: workforceProjectId, companyId, portfolioId, name: "Workforce / Projects" },
-    ]);
-    await db.insert(pipelines).values({
-      id: pipelineId,
-      companyId,
-      name: "Repository delivery",
-      executionMode: "stage_tasks",
-      trigger: { originKinds: ["github_issue"] },
-      steps: [
-        {
-          key: "plan",
-          kind: "work",
-          label: "Plan",
-          participant: { type: "agent", agentId },
-        },
-      ],
-    });
-    const classify = vi.fn(async () => ({
-      labels: ["bug"],
-      scopes: ["workforce"],
-      projectKey: "hub-workforce",
-      projectGroup: "minion-hub",
-      confidence: 0.94,
-      rationale: "The report concerns the workforce projects module.",
-    }));
-    deps.stageTaskIntake = {
-      classifier: { droneId: PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID, classify },
-      config: {
-        pipelineId,
-        intakeProjectId,
-        minimumConfidence: 0.7,
-        routes: [
-          {
-            key: "portfolio-intake",
-            name: "Portfolio Intake",
-            projectId: intakeProjectId,
-            repository: "cross-repo",
-            repositories: ["*"],
-            scopes: [],
-          },
-          {
-            key: "hub-workforce",
-            name: "Workforce / Projects",
-            projectId: workforceProjectId,
-            group: "minion-hub",
-            repository: "minion-hub",
-            repositories: ["NikolasP98/minion_hub"],
-            scopes: ["workforce"],
-          },
-        ],
-      },
-    };
-
+  it("attributes async classification, freezes delivery, and reconciles exactly once", async () => {
+    const seeded = await seedAsyncStageTaskIntake();
     const first = await handleGithubEvent(db, deps, "issues", issuesEvent("opened"), {
       deliveryId: "delivery-1",
     });
@@ -273,56 +324,220 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
 
     expect(first).toMatchObject({ action: "created", pipelineRunId: expect.any(String) });
     expect(replay).toMatchObject({ action: "duplicate", pipelineRunId: first.pipelineRunId });
-    expect(classify).toHaveBeenCalledTimes(1);
-    expect(classify.mock.calls[0]?.[0]).toEqual({
-      issue: {
-        source: "github",
-        repository: "NikolasP98/minion_hub",
-        externalId: "7",
-        title: "[Bug] chart crashes",
-        body: "steps…",
-        labels: ["bug", "high", "agent"],
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const classifierWake = wakeup.mock.calls[0];
+    expect(classifierWake?.[0]).toBe(seeded.classifierAgentId);
+    expect(classifierWake?.[1]).toMatchObject({
+      reason: "github_issue_classification",
+      contextSnapshot: {
+        paperclipDrone: {
+          input: {
+            issue: {
+              source: "github",
+              repository: "NikolasP98/minion_hub",
+              externalId: "7",
+            },
+            fallbackProjectKey: "portfolio-intake",
+          },
+        },
+        githubClassifier: {
+          kind: "github_issue_classifier_v1",
+          classifierPipelineRunId: first.pipelineRunId,
+        },
       },
-      allowedLabels: ["bug", "feature", "security", "maintenance", "docs", "critical", "high", "medium", "low"],
-      allowedScopes: ["auth", "crm", "core", "gateway", "workforce", "ui", "data", "plugins", "ops", "docs"],
-      projectCandidates: [
-        {
-          key: "portfolio-intake",
-          name: "Portfolio Intake",
-          repositories: ["*"],
-          scopes: [],
-        },
-        {
-          key: "hub-workforce",
-          name: "Workforce / Projects",
-          group: "minion-hub",
-          repositories: ["NikolasP98/minion_hub"],
-          scopes: ["workforce"],
-        },
-      ],
-      fallbackProjectKey: "portfolio-intake",
     });
 
-    const runs = await db.select().from(issuePipelineRuns);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
-      id: first.pipelineRunId,
-      selectedProjectId: workforceProjectId,
+    const classifierRun = await db
+      .select()
+      .from(issuePipelineRuns)
+      .where(eq(issuePipelineRuns.id, first.pipelineRunId as string))
+      .then((rows) => rows[0]);
+    expect(classifierRun).toMatchObject({
+      selectedProjectId: seeded.intakeProjectId,
+      sourceOriginId: "classifier:NikolasP98/minion_hub#7",
       sourceDeliveryId: "delivery-1",
+      pipelineSnapshot: { steps: [{ key: "classify" }] },
       routingSnapshot: {
-        repository: "NikolasP98/minion_hub",
-        inferredLabels: ["bug"],
-        selectedProjectId: workforceProjectId,
+        resolution: "unresolved",
+        selectedProjectId: seeded.intakeProjectId,
+        intakeContext: {
+          classifierAgentId: seeded.classifierAgentId,
+          deliveryPipelineSnapshot: { steps: [{ key: "plan" }] },
+        },
+      },
+    });
+
+    // An operator edit after intake must not alter the in-flight delivery snapshot.
+    await db
+      .update(pipelines)
+      .set({
+        steps: [
+          {
+            key: "edited-plan",
+            kind: "work",
+            label: "Edited Plan",
+            participant: { type: "agent", agentId },
+          },
+        ],
+        updatedAt: new Date(),
+      })
+      .where(eq(pipelines.id, seeded.pipelineId));
+
+    const classifierHeartbeat = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, seeded.classifierAgentId))
+      .then((rows) => rows[0]);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        resultJson: {
+          droneId: PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID,
+          output: {
+            labels: ["bug", "high"],
+            scopes: ["workforce"],
+            projectKey: "hub-workforce",
+            projectGroup: "minion-hub",
+            confidence: 0.94,
+            rationale: "The report concerns the workforce projects module.",
+          },
+        },
+        resolvedAdapterType: "minion_drone",
+        resolvedModel: "claude-haiku-4-5",
+        resolvedProvider: "anthropic",
+        finishedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, classifierHeartbeat!.id));
+
+    const finalized = await finalizeGithubClassifierHeartbeatById({
+      db,
+      heartbeat,
+      heartbeatRunId: classifierHeartbeat!.id,
+    });
+    expect(finalized).toMatchObject({ status: "routed" });
+    expect(wakeup).toHaveBeenCalledTimes(2);
+
+    const runs = await db.select().from(issuePipelineRuns);
+    expect(runs).toHaveLength(2);
+    const deliveryRun = runs.find((run) => run.sourceOriginId.startsWith("delivery:"));
+    expect(deliveryRun).toMatchObject({
+      selectedProjectId: seeded.workforceProjectId,
+      sourceOriginId: "delivery:NikolasP98/minion_hub#7",
+      pipelineSnapshot: { steps: [{ key: "plan", participant: { agentId } }] },
+      routingSnapshot: {
+        inferredLabels: ["bug", "high"],
+        selectedProjectId: seeded.workforceProjectId,
         resolution: "rule",
-        classifierOutput: { projectKey: "hub-workforce", scopes: ["workforce"] },
       },
     });
     const allIssues = await db.select().from(issues);
-    const root = allIssues.find((issue) => issue.originKind === "github_issue");
-    const stageChildren = allIssues.filter((issue) => issue.originKind === "pipeline_step");
-    expect(root).toMatchObject({ projectId: workforceProjectId, status: "blocked", assigneeAgentId: null });
-    expect(stageChildren).toHaveLength(1);
-    expect(stageChildren[0]).toMatchObject({ parentId: root?.id, originFingerprint: "plan:1", projectId: workforceProjectId });
-    expect(wakeup).not.toHaveBeenCalled();
+    const root = allIssues.find((issue) => issue.originKind === "github_issue")!;
+    const classifierTask = allIssues.find(
+      (issue) => issue.originId === first.pipelineRunId && issue.originFingerprint === "classify:1",
+    );
+    const planTask = allIssues.find(
+      (issue) => issue.originId === deliveryRun?.id && issue.originFingerprint === "plan:1",
+    );
+    expect(root).toMatchObject({
+      projectId: seeded.workforceProjectId,
+      status: "blocked",
+      assigneeAgentId: null,
+    });
+    expect(classifierTask).toMatchObject({ status: "done", projectId: seeded.intakeProjectId });
+    expect(planTask).toMatchObject({ status: "todo", projectId: seeded.workforceProjectId });
+    const localLabels = await db.select().from(labels);
+    expect(localLabels.map((label) => label.name)).toEqual(
+      expect.arrayContaining(["bug", "high", "scope:workforce"]),
+    );
+
+    const terminalTrace = await db
+      .select()
+      .from(issuePipelineEvents)
+      .where(eq(issuePipelineEvents.pipelineRunId, first.pipelineRunId as string))
+      .then((events) => events.find((event) => event.eventType === "stage_completed"));
+    expect(terminalTrace).toMatchObject({
+      heartbeatRunId: classifierHeartbeat!.id,
+      harnessRevisionId: seeded.harnessRevisionId,
+      resolvedAdapterType: "minion_drone",
+      resolvedModel: "claude-haiku-4-5",
+      resolvedProvider: "anthropic",
+      outputSnapshot: {
+        classificationStatus: "validated",
+        validatedOutput: { projectKey: "hub-workforce" },
+      },
+      decisionSnapshot: { projectId: seeded.workforceProjectId },
+    });
+
+    const rootUpdatedAt = root.updatedAt.getTime();
+    const eventCount = (await db.select().from(issuePipelineEvents)).length;
+    await reconcileGithubClassifierPipelineRun({
+      db,
+      heartbeat,
+      pipelineRunId: first.pipelineRunId as string,
+    });
+    await reconcileGithubClassifierPipelineRun({
+      db,
+      heartbeat,
+      pipelineRunId: first.pipelineRunId as string,
+    });
+    const rootAfterReplay = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, root.id))
+      .then((rows) => rows[0]);
+    expect(rootAfterReplay?.updatedAt.getTime()).toBe(rootUpdatedAt);
+    expect(await db.select().from(issuePipelineEvents)).toHaveLength(eventCount);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks invalid classifier output in Portfolio Intake without starting delivery", async () => {
+    const seeded = await seedAsyncStageTaskIntake();
+    const first = await handleGithubEvent(db, deps, "issues", issuesEvent("opened", 9));
+    const classifierHeartbeat = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, seeded.classifierAgentId))
+      .then((rows) => rows[0]);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        resultJson: {
+          droneId: PORTFOLIO_ISSUE_CLASSIFIER_DRONE_ID,
+          output: {
+            labels: ["not-in-taxonomy"],
+            scopes: ["workforce"],
+            projectKey: "hub-workforce",
+            confidence: 0.99,
+            rationale: "Invalid label must fail strict validation.",
+          },
+        },
+        resolvedAdapterType: "minion_drone",
+        resolvedModel: "claude-haiku-4-5",
+        resolvedProvider: "anthropic",
+        finishedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, classifierHeartbeat!.id));
+
+    const finalized = await finalizeGithubClassifierHeartbeatById({
+      db,
+      heartbeat,
+      heartbeatRunId: classifierHeartbeat!.id,
+    });
+    expect(finalized).toMatchObject({ status: "blocked", deliveryRun: null });
+    expect(await db.select().from(issuePipelineRuns)).toHaveLength(1);
+    const root = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, (first as { issueId: string }).issueId))
+      .then((rows) => rows[0]);
+    const child = await db
+      .select()
+      .from(issues)
+      .then((rows) => rows.find((issue) => issue.originKind === "pipeline_step"));
+    expect(root).toMatchObject({ projectId: seeded.intakeProjectId, status: "blocked" });
+    expect(child).toMatchObject({ projectId: seeded.intakeProjectId, status: "blocked" });
+    expect(wakeup).toHaveBeenCalledTimes(1);
   });
 });

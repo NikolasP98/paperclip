@@ -321,6 +321,7 @@ export interface SeedMinionCodePortfolioResult {
   githubIntakeActivation: {
     pipelineId: string;
     intakeProjectId: string;
+    classifierAgentId: string;
     routesJson: string;
   };
   actions: MinionCodeSeedAction[];
@@ -962,6 +963,7 @@ export async function seedMinionCodePortfolio(
     githubIntakeActivation: {
       pipelineId,
       intakeProjectId: projectIds['portfolio-intake']!,
+      classifierAgentId: agentIds.classifier,
       routesJson: JSON.stringify(routeRules),
     },
     actions,

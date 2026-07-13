@@ -9,7 +9,6 @@ import { issueService } from "../services/issues.js";
 import { applyPipelineToCreateInput, resolvePipeline, type PipelineApplyTarget } from "../services/pipelines.js";
 import {
   activateGithubStageTaskPipeline,
-  type GithubIssueClassifier,
   type GithubStageTaskIntakeConfig,
 } from "../services/github-stage-task-intake.js";
 import type { RepoSandboxService } from "../services/repo-sandbox.js";
@@ -33,7 +32,6 @@ export interface GithubBugsDeps {
   /** Explicit opt-in for classified, deterministically routed stage-task intake. */
   stageTaskIntake?: {
     config: GithubStageTaskIntakeConfig;
-    classifier: GithubIssueClassifier;
   };
 }
 
@@ -149,7 +147,7 @@ export async function handleGithubEvent(
       originalLabels: labels,
       deliveryId: options.deliveryId,
       config: deps.stageTaskIntake.config,
-      classifier: deps.stageTaskIntake.classifier,
+      heartbeat: deps.heartbeat,
     });
   };
   // ponytail: no partial-unique DB index on (companyId, originKind, originId)

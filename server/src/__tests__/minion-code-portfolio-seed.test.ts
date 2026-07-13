@@ -75,6 +75,7 @@ describeDb('MINION Code portfolio seed', () => {
     expect(applied.githubIntakeActivation).toMatchObject({
       pipelineId: applied.pipelineId,
       intakeProjectId: applied.intakeProjectId,
+      classifierAgentId: applied.agentIds.classifier,
     });
     expect(JSON.parse(applied.githubIntakeActivation.routesJson)).toEqual(applied.routeRules);
     expect(applied.routeRules).toContainEqual({

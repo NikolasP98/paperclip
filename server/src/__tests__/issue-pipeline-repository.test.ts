@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import {
@@ -17,6 +19,8 @@ import type { IssuePipelineSnapshot } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issuePipelineOrchestrator } from "../services/issue-pipeline-orchestrator.js";
 import { issuePipelineOrchestratorRepository } from "../services/issue-pipeline-repository.js";
+import { issuePipelineRunRoutes } from "../routes/issue-pipeline-runs.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDb = support.supported ? describe : describe.skip;
@@ -154,6 +158,27 @@ describeDb("issue pipeline repository", () => {
       manualBlockerId,
       snapshot,
     };
+  }
+
+  function routeApp(allowedCompanyId: string) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "pipeline-reader",
+        source: "session",
+        companyIds: [allowedCompanyId],
+        memberships: [
+          { companyId: allowedCompanyId, membershipRole: "owner", status: "active" },
+        ],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", issuePipelineRunRoutes(db));
+    app.use(errorHandler);
+    return app;
   }
 
   it("rolls child, blocker, and root-state writes back together", async () => {
@@ -341,5 +366,39 @@ describeDb("issue pipeline repository", () => {
       .where(eq(issueRelations.relatedIssueId, scenario.rootIssueId));
     expect(completedRoot.status).toBe("done");
     expect(completedBlockers).toEqual([{ issueId: scenario.manualBlockerId }]);
+  });
+
+  it("resolves a stage child to its frozen run and denies cross-company child/direct reads", async () => {
+    const scenario = await seedScenario();
+    const started = await issuePipelineOrchestrator(
+      issuePipelineOrchestratorRepository(db),
+    ).start({
+      companyId: scenario.companyId,
+      selectedProjectId: scenario.projectId,
+      issueId: scenario.rootIssueId,
+      sourceKey: `route-read:${scenario.rootIssueId}`,
+      pipelineSnapshot: scenario.snapshot,
+    });
+    const allowed = routeApp(scenario.companyId);
+    const childRead = await request(allowed).get(
+      `/api/issues/${started.stageTask.issueId}/pipeline-run`,
+    );
+    expect(childRead.status).toBe(200);
+    expect(childRead.body).toMatchObject({
+      id: started.run.id,
+      companyId: scenario.companyId,
+      pipelineSnapshot: { steps: [{ key: "plan:v1" }, { key: "implement" }] },
+    });
+    const directRead = await request(allowed).get(`/api/issue-pipeline-runs/${started.run.id}`);
+    expect(directRead.status).toBe(200);
+    expect(directRead.body.id).toBe(started.run.id);
+
+    const denied = routeApp(randomUUID());
+    expect(
+      (await request(denied).get(`/api/issues/${started.stageTask.issueId}/pipeline-run`)).status,
+    ).toBe(403);
+    expect(
+      (await request(denied).get(`/api/issue-pipeline-runs/${started.run.id}`)).status,
+    ).toBe(403);
   });
 });

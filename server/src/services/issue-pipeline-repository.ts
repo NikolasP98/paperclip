@@ -469,6 +469,13 @@ class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchest
       attempt: input.attempt ?? null,
       predecessorEventId: latest?.id ?? null,
       outputSnapshot: input.outputSnapshot ?? null,
+      inputSnapshot: input.inputSnapshot ?? null,
+      decisionSnapshot: input.decisionSnapshot ?? null,
+      heartbeatRunId: input.heartbeatRunId ?? null,
+      harnessRevisionId: input.harnessRevisionId ?? null,
+      resolvedAdapterType: input.resolvedAdapterType ?? null,
+      resolvedModel: input.resolvedModel ?? null,
+      resolvedProvider: input.resolvedProvider ?? null,
       score: input.score ?? null,
       maxScore: input.maxScore ?? null,
     });

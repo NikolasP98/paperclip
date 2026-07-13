@@ -68,6 +68,7 @@ to emit pipelineId, intakeProjectId, and deterministic route rules for intake.`)
   }
   console.log(`GITHUB_BUGS_STAGE_TASKS_PIPELINE_ID=${result.githubIntakeActivation.pipelineId}`);
   console.log(`GITHUB_BUGS_INTAKE_PROJECT_ID=${result.githubIntakeActivation.intakeProjectId}`);
+  console.log(`GITHUB_BUGS_CLASSIFIER_AGENT_ID=${result.githubIntakeActivation.classifierAgentId}`);
   console.log(`GITHUB_BUGS_STAGE_TASK_ROUTES_JSON=${result.githubIntakeActivation.routesJson}`);
   for (const deferred of result.deferred) console.log(`deferred  ${deferred}`);
 }

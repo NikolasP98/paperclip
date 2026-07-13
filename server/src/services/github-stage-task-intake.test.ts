@@ -3,13 +3,14 @@ import { parseGithubStageTaskIntakeEnv } from "./github-stage-task-intake.js";
 
 const pipelineId = "11111111-1111-4111-8111-111111111111";
 const intakeProjectId = "22222222-2222-4222-8222-222222222222";
+const classifierAgentId = "33333333-3333-4333-8333-333333333333";
 
 describe("GitHub stage-task intake config", () => {
   it("is disabled unless an explicit stage-task pipeline is configured", () => {
     expect(parseGithubStageTaskIntakeEnv({})).toBeNull();
   });
 
-  it("requires gateway credentials and an operator-owned intake route when enabled", () => {
+  it("requires an attributed classifier agent and an operator-owned intake route when enabled", () => {
     expect(() =>
       parseGithubStageTaskIntakeEnv({ GITHUB_BUGS_STAGE_TASKS_PIPELINE_ID: pipelineId }),
     ).toThrow("requires GITHUB_BUGS_INTAKE_PROJECT_ID");
@@ -18,6 +19,7 @@ describe("GitHub stage-task intake config", () => {
       parseGithubStageTaskIntakeEnv({
         GITHUB_BUGS_STAGE_TASKS_PIPELINE_ID: pipelineId,
         GITHUB_BUGS_INTAKE_PROJECT_ID: intakeProjectId,
+        GITHUB_BUGS_CLASSIFIER_AGENT_ID: classifierAgentId,
         GITHUB_BUGS_STAGE_TASK_ROUTES_JSON: JSON.stringify([
           {
             key: "hub-workforce",
@@ -28,8 +30,6 @@ describe("GitHub stage-task intake config", () => {
             scopes: ["workforce"],
           },
         ]),
-        MINION_GATEWAY_URL: "ws://127.0.0.1:18789",
-        MINION_GATEWAY_TOKEN: "secret",
       }),
     ).toThrow("must include the configured intake project");
   });
@@ -38,6 +38,7 @@ describe("GitHub stage-task intake config", () => {
     const parsed = parseGithubStageTaskIntakeEnv({
       GITHUB_BUGS_STAGE_TASKS_PIPELINE_ID: pipelineId,
       GITHUB_BUGS_INTAKE_PROJECT_ID: intakeProjectId,
+      GITHUB_BUGS_CLASSIFIER_AGENT_ID: classifierAgentId,
       GITHUB_BUGS_CLASSIFIER_MIN_CONFIDENCE: "0.8",
       GITHUB_BUGS_STAGE_TASK_ROUTES_JSON: JSON.stringify([
         {
@@ -49,16 +50,13 @@ describe("GitHub stage-task intake config", () => {
           scopes: [],
         },
       ]),
-      MINION_GATEWAY_URL: "ws://127.0.0.1:18789",
-      MINION_GATEWAY_TOKEN: "secret",
     });
 
     expect(parsed).toMatchObject({
-      gatewayUrl: "ws://127.0.0.1:18789",
-      gatewayToken: "secret",
       config: {
         pipelineId,
         intakeProjectId,
+        classifierAgentId,
         minimumConfidence: 0.8,
         routes: [{ key: "portfolio-intake", repository: "cross-repo", scopes: [] }],
       },

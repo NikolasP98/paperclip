@@ -38,6 +38,13 @@ export interface AppendPipelineEventInput {
   stepKey?: string | null;
   attempt?: number | null;
   outputSnapshot?: Record<string, unknown> | null;
+  inputSnapshot?: Record<string, unknown> | null;
+  decisionSnapshot?: Record<string, unknown> | null;
+  heartbeatRunId?: string | null;
+  harnessRevisionId?: string | null;
+  resolvedAdapterType?: string | null;
+  resolvedModel?: string | null;
+  resolvedProvider?: string | null;
   score?: number | null;
   maxScore?: number | null;
 }
@@ -116,6 +123,16 @@ export interface CompleteStageTaskInput {
   score?: number | null;
   maxScore?: number | null;
   summary?: string | null;
+  trace?: {
+    inputSnapshot?: Record<string, unknown> | null;
+    outputSnapshot?: Record<string, unknown> | null;
+    decisionSnapshot?: Record<string, unknown> | null;
+    heartbeatRunId?: string | null;
+    harnessRevisionId?: string | null;
+    resolvedAdapterType?: string | null;
+    resolvedModel?: string | null;
+    resolvedProvider?: string | null;
+  };
 }
 
 export interface CompleteStageTaskTransition {
@@ -340,10 +357,18 @@ export function issuePipelineOrchestrator(
           stepKey: task.stageKey,
           attempt: task.attempt,
           outputSnapshot: {
+            ...(input.trace?.outputSnapshot ?? {}),
             terminalStatus: input.terminalStatus,
             outcome: input.outcome ?? null,
             summary: input.summary ?? null,
           },
+          inputSnapshot: input.trace?.inputSnapshot ?? null,
+          decisionSnapshot: input.trace?.decisionSnapshot ?? null,
+          heartbeatRunId: input.trace?.heartbeatRunId ?? null,
+          harnessRevisionId: input.trace?.harnessRevisionId ?? null,
+          resolvedAdapterType: input.trace?.resolvedAdapterType ?? null,
+          resolvedModel: input.trace?.resolvedModel ?? null,
+          resolvedProvider: input.trace?.resolvedProvider ?? null,
           score: input.score ?? null,
           maxScore: effectiveMaxScore,
         });

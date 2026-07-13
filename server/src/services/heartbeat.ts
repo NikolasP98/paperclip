@@ -56,6 +56,10 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { notifyGithubBugRunFailure } from "./github-bugs-notify.js";
+import {
+  finalizeGithubClassifierHeartbeat,
+  reconcileGithubClassifierRuns,
+} from "./github-stage-task-intake.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -7546,6 +7550,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
+      await finalizeGithubClassifierHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped GitHub classifier heartbeat",
+        );
+      });
+
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -9527,7 +9542,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
-          const latestRun = await getRun(run.id).catch(() => null);
+          const latestRun = await getRun(run.id, { unsafeFullResultJson: true }).catch(() => null);
+          if (latestRun) {
+            await finalizeGithubClassifierHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize GitHub classifier heartbeat",
+              );
+            });
+          }
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,
@@ -11515,6 +11542,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileGithubClassifierIntake: (companyId?: string) =>
+      reconcileGithubClassifierRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
 
     sweepStaleIssueLocks,
 

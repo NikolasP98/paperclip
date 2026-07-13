@@ -11,6 +11,7 @@ export interface IssueAssignmentWakeupDeps {
       triggerDetail?: WakeupTriggerDetail;
       reason?: string | null;
       payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;

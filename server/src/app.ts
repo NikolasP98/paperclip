@@ -21,10 +21,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { githubBugRoutes } from "./routes/github-bugs.js";
 import { seedGithubBugsPipeline } from "./services/pipelines.js";
-import {
-  createMinionGithubIssueClassifier,
-  parseGithubStageTaskIntakeEnv,
-} from "./services/github-stage-task-intake.js";
+import { parseGithubStageTaskIntakeEnv } from "./services/github-stage-task-intake.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
@@ -377,7 +374,6 @@ export async function createApp(
           ? {
               stageTaskIntake: {
                 config: stageTaskEnv.config,
-                classifier: createMinionGithubIssueClassifier(stageTaskEnv),
               },
             }
           : {}),

@@ -83,6 +83,8 @@ export interface IssuePipelineRoutingSnapshot {
   confidence: number | null;
   resolution: "rule" | "override" | "intake_fallback" | "unresolved";
   reason: string | null;
+  /** Frozen coordinator-owned input needed to replay an asynchronous intake decision. */
+  intakeContext?: Record<string, unknown> | null;
 }
 
 export interface IssuePipelineRun {
