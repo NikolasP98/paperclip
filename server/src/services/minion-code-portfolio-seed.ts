@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
-import { agents, companies, pipelines, portfolios, projects, type Db } from '@paperclipai/db';
+import { isAbsolute } from 'node:path';
+import { and, eq, isNull, ne } from 'drizzle-orm';
+import {
+  agents,
+  companies,
+  pipelines,
+  portfolios,
+  projects,
+  projectWorkspaces,
+  type Db,
+} from '@paperclipai/db';
 import {
   createPipelineSchema,
   isUuidLike,
@@ -276,10 +285,28 @@ export interface SeedMinionCodePortfolioInput {
   minionGatewayTokenSecretId: string;
   /** An operator-provided model id that has already passed the target-environment probe. */
   probedHermesModel?: string | null;
+  repositoryWorkspaces: Record<MinionCodeRepositoryKey, MinionCodeRepositoryWorkspaceInput>;
   apply?: boolean;
 }
 
-export type MinionCodeSeedResourceType = 'portfolio' | 'project' | 'agent' | 'pipeline';
+export type MinionCodeRepositoryKey = Exclude<MinionCodeRouteRule['repository'], 'cross-repo'>;
+
+export interface MinionCodeRepositoryWorkspaceInput {
+  /** Absolute path to the primary clone as seen by the Paperclip runtime. */
+  cwd: string;
+  repoUrl: string;
+  /** Immutable operator-selected base ref, for example origin/dev. */
+  baseRef: string;
+  /** Absolute parent directory where per-issue worktrees may be created. */
+  worktreeParentDir: string;
+}
+
+export type MinionCodeSeedResourceType =
+  | 'portfolio'
+  | 'project'
+  | 'workspace'
+  | 'agent'
+  | 'pipeline';
 export type MinionCodeSeedOperation = 'create' | 'update' | 'unchanged';
 
 export interface MinionCodeSeedAction {
@@ -315,6 +342,7 @@ export interface SeedMinionCodePortfolioResult {
   portfolioId: string;
   intakeProjectId: string;
   projectIds: Record<string, string>;
+  workspaceIds: Record<string, string>;
   agentIds: Record<MinionCodeAgentRoleKey, string>;
   pipelineId: string;
   routeRules: MinionCodeRouteRule[];
@@ -611,11 +639,62 @@ const REPOSITORY_FULL_NAMES: Record<
   'minion-plugins': ['NikolasP98/minion_plugins'],
 };
 
+const MINION_CODE_REPOSITORY_KEYS = Object.freeze(
+  Object.keys(REPOSITORY_FULL_NAMES) as MinionCodeRepositoryKey[],
+);
+
+function validateRepositoryWorkspaces(
+  value: SeedMinionCodePortfolioInput['repositoryWorkspaces'],
+): Record<MinionCodeRepositoryKey, MinionCodeRepositoryWorkspaceInput> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('repositoryWorkspaces must configure every routed repository');
+  }
+
+  const configured = new Set(Object.keys(value));
+  const missing = MINION_CODE_REPOSITORY_KEYS.filter((key) => !configured.has(key));
+  const unknown = [...configured].filter(
+    (key) => !MINION_CODE_REPOSITORY_KEYS.includes(key as MinionCodeRepositoryKey),
+  );
+  if (missing.length > 0 || unknown.length > 0) {
+    throw new Error(
+      [
+        missing.length > 0 ? `missing repository workspaces: ${missing.join(', ')}` : null,
+        unknown.length > 0 ? `unknown repository workspaces: ${unknown.join(', ')}` : null,
+      ]
+        .filter(Boolean)
+        .join('; '),
+    );
+  }
+
+  for (const key of MINION_CODE_REPOSITORY_KEYS) {
+    const workspace = value[key];
+    if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace)) {
+      throw new Error(`repository workspace ${key} must be an object`);
+    }
+    if (!workspace.cwd?.trim() || !isAbsolute(workspace.cwd)) {
+      throw new Error(`repository workspace ${key}.cwd must be an absolute path`);
+    }
+    if (!workspace.worktreeParentDir?.trim() || !isAbsolute(workspace.worktreeParentDir)) {
+      throw new Error(
+        `repository workspace ${key}.worktreeParentDir must be an absolute path`,
+      );
+    }
+    if (!workspace.repoUrl?.trim()) {
+      throw new Error(`repository workspace ${key}.repoUrl is required`);
+    }
+    if (!workspace.baseRef?.trim()) {
+      throw new Error(`repository workspace ${key}.baseRef is required`);
+    }
+  }
+  return value;
+}
+
 export async function seedMinionCodePortfolio(
   db: Db,
   input: SeedMinionCodePortfolioInput,
 ): Promise<SeedMinionCodePortfolioResult> {
   const gatewayUrl = validateGatewayInput(input);
+  const repositoryWorkspaces = validateRepositoryWorkspaces(input.repositoryWorkspaces);
   const releaseApproverUserId = input.releaseApproverUserId ?? input.planApproverUserId;
   const apply = input.apply === true;
 
@@ -626,10 +705,20 @@ export async function seedMinionCodePortfolio(
     .limit(1);
   if (!company) throw new Error(`Company not found: ${input.companyId}`);
 
-  const [existingPortfolios, existingProjects, existingAgents, existingPipelines] =
+  const [
+    existingPortfolios,
+    existingProjects,
+    existingWorkspaces,
+    existingAgents,
+    existingPipelines,
+  ] =
     await Promise.all([
       db.select().from(portfolios).where(eq(portfolios.companyId, input.companyId)),
       db.select().from(projects).where(eq(projects.companyId, input.companyId)),
+      db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.companyId, input.companyId)),
       db.select().from(agents).where(eq(agents.companyId, input.companyId)),
       db
         .select()
@@ -714,16 +803,80 @@ export async function seedMinionCodePortfolio(
           normalizedName(project.name) === normalizedName(definition.name),
       );
     const id = existing?.id ?? stableSeedId(input.companyId, seedKey);
+    const repositoryKey =
+      definition.repositoryKey === 'cross-repo'
+        ? null
+        : (definition.repositoryKey as MinionCodeRepositoryKey);
+    const workspaceSeedKey = repositoryKey ? `minion-code:workspace:${definition.key}` : null;
+    const existingWorkspace = workspaceSeedKey
+      ? findBySeedKey(existingWorkspaces, workspaceSeedKey)
+      : undefined;
+    const workspaceId = workspaceSeedKey
+      ? (existingWorkspace?.id ?? stableSeedId(input.companyId, workspaceSeedKey))
+      : null;
+    const repositoryWorkspace = repositoryKey ? repositoryWorkspaces[repositoryKey] : null;
     const desired = {
       portfolioId,
       name: existing?.name ?? definition.name,
       description: existing?.description ?? definition.description,
       status: existing?.status ?? 'in_progress',
       metadata: buildProjectMetadata(definition, existing?.metadata),
+      executionWorkspacePolicy:
+        workspaceId && repositoryWorkspace
+          ? {
+              enabled: true,
+              defaultMode: 'isolated_workspace',
+              allowIssueOverride: false,
+              defaultProjectWorkspaceId: workspaceId,
+              workspaceStrategy: {
+                type: 'git_worktree',
+                baseRef: repositoryWorkspace.baseRef.trim(),
+                branchTemplate: 'paperclip/{{issue.identifier}}-{{slug}}',
+                worktreeParentDir: repositoryWorkspace.worktreeParentDir.trim(),
+              },
+            }
+          : null,
     } satisfies Record<string, unknown>;
-    return { definition, existing, id, desired };
+    return {
+      definition,
+      existing,
+      id,
+      desired,
+      repositoryKey,
+      repositoryWorkspace,
+      existingWorkspace,
+      workspaceId,
+    };
   });
   const projectIds = Object.fromEntries(projectPlans.map((plan) => [plan.definition.key, plan.id]));
+  const workspacePlans = projectPlans.flatMap((plan) => {
+    if (!plan.repositoryKey || !plan.repositoryWorkspace || !plan.workspaceId) return [];
+    const seedKey = `minion-code:workspace:${plan.definition.key}`;
+    const existing = plan.existingWorkspace;
+    const desired = {
+      companyId: input.companyId,
+      projectId: plan.id,
+      name: `${plan.definition.name} primary`,
+      sourceType: 'git_repo',
+      cwd: plan.repositoryWorkspace.cwd.trim(),
+      repoUrl: plan.repositoryWorkspace.repoUrl.trim(),
+      repoRef: plan.repositoryWorkspace.baseRef.trim(),
+      defaultRef: plan.repositoryWorkspace.baseRef.trim(),
+      sharedWorkspaceKey: `minion-code:${plan.repositoryKey}`,
+      metadata: {
+        ...asRecord(existing?.metadata),
+        minionSeedKey: seedKey,
+        minionSeedVersion: MINION_CODE_SEED_VERSION,
+        repositoryKey: plan.repositoryKey,
+        worktreeParentDir: plan.repositoryWorkspace.worktreeParentDir.trim(),
+      },
+      isPrimary: true,
+    } satisfies Record<string, unknown>;
+    return [{ plan, seedKey, existing, id: plan.workspaceId, desired }];
+  });
+  const workspaceIds = Object.fromEntries(
+    workspacePlans.map((plan) => [plan.plan.definition.key, plan.id]),
+  );
   const routeRules: MinionCodeRouteRule[] = projectPlans.map((plan) => {
     if (plan.definition.intakeFallback || plan.definition.repositoryKey === 'cross-repo') {
       return {
@@ -858,6 +1011,15 @@ export async function seedMinionCodePortfolio(
         plan.desired,
       ),
     ),
+    ...workspacePlans.map((plan) =>
+      seedAction(
+        'workspace',
+        plan.plan.definition.key,
+        plan.id,
+        plan.existing as Record<string, unknown> | null,
+        plan.desired,
+      ),
+    ),
     seedAction(
       'pipeline',
       'delivery',
@@ -920,6 +1082,34 @@ export async function seedMinionCodePortfolio(
           });
       }
 
+      for (const plan of workspacePlans) {
+        await tx
+          .update(projectWorkspaces)
+          .set({ isPrimary: false, updatedAt: new Date() })
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, input.companyId),
+              eq(projectWorkspaces.projectId, plan.plan.id),
+              ne(projectWorkspaces.id, plan.id),
+              eq(projectWorkspaces.isPrimary, true),
+            ),
+          );
+        if (operationFor('workspace', plan.plan.definition.key) === 'unchanged') continue;
+        await tx
+          .insert(projectWorkspaces)
+          .values({
+            id: plan.id,
+            ...plan.desired,
+          } as typeof projectWorkspaces.$inferInsert)
+          .onConflictDoUpdate({
+            target: projectWorkspaces.id,
+            set: {
+              ...plan.desired,
+              updatedAt: new Date(),
+            } as Partial<typeof projectWorkspaces.$inferInsert>,
+          });
+      }
+
       if (operationFor('pipeline', 'delivery') !== 'unchanged') {
         await tx
           .insert(pipelines)
@@ -957,6 +1147,7 @@ export async function seedMinionCodePortfolio(
     portfolioId,
     intakeProjectId: projectIds['portfolio-intake']!,
     projectIds,
+    workspaceIds,
     agentIds,
     pipelineId,
     routeRules,

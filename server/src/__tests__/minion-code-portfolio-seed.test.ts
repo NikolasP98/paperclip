@@ -8,6 +8,7 @@ import {
   pipelines,
   portfolios,
   projects,
+  projectWorkspaces,
 } from '@paperclipai/db';
 import { createPipelineSchema } from '@paperclipai/shared';
 import {
@@ -52,8 +53,73 @@ describeDb('MINION Code portfolio seed', () => {
       releaseApproverUserId: 'board-release-approver',
       minionGatewayUrl: 'ws://127.0.0.1:18789',
       minionGatewayTokenSecretId: randomUUID(),
+      repositoryWorkspaces: repositoryWorkspaceInput(),
     };
   }
+
+  function repositoryWorkspaceInput() {
+    return {
+      'minion-meta': {
+        cwd: '/srv/minion/minion-meta',
+        repoUrl: 'https://github.com/example/minion-meta.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/minion-meta',
+      },
+      'minion-ai': {
+        cwd: '/srv/minion/minion-ai',
+        repoUrl: 'https://github.com/example/minion-ai.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/minion-ai',
+      },
+      'minion-hub': {
+        cwd: '/srv/minion/minion-hub',
+        repoUrl: 'https://github.com/example/minion-hub.git',
+        baseRef: 'origin/dev',
+        worktreeParentDir: '/srv/minion-worktrees/minion-hub',
+      },
+      'minion-site': {
+        cwd: '/srv/minion/minion-site',
+        repoUrl: 'https://github.com/example/minion-site.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/minion-site',
+      },
+      paperclip: {
+        cwd: '/srv/minion/paperclip',
+        repoUrl: 'https://github.com/example/paperclip.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/paperclip',
+      },
+      'pixel-agents': {
+        cwd: '/srv/minion/pixel-agents',
+        repoUrl: 'https://github.com/example/pixel-agents.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/pixel-agents',
+      },
+      'minion-plugins': {
+        cwd: '/srv/minion/minion-plugins',
+        repoUrl: 'https://github.com/example/minion-plugins.git',
+        baseRef: 'origin/main',
+        worktreeParentDir: '/srv/minion-worktrees/minion-plugins',
+      },
+    };
+  }
+
+  it('fails closed when a repository workspace is not container-absolute', async () => {
+    const companyId = await createCompany('MINION Invalid Workspace Co');
+    const seedInput = input(companyId);
+    await expect(
+      seedMinionCodePortfolio(db, {
+        ...seedInput,
+        repositoryWorkspaces: {
+          ...seedInput.repositoryWorkspaces,
+          'minion-hub': {
+            ...seedInput.repositoryWorkspaces['minion-hub'],
+            cwd: 'relative/minion-hub',
+          },
+        },
+      }),
+    ).rejects.toThrow('repository workspace minion-hub.cwd must be an absolute path');
+  });
 
   it('previews without writes, applies the grouped portfolio, and reruns without reconciliation drift', async () => {
     const companyId = await createCompany('MINION Seed Co');
@@ -64,12 +130,14 @@ describeDb('MINION Code portfolio seed', () => {
     expect(preview.actions.every((action) => action.operation === 'create')).toBe(true);
     expect(await db.select().from(portfolios)).toHaveLength(0);
     expect(await db.select().from(projects)).toHaveLength(0);
+    expect(await db.select().from(projectWorkspaces)).toHaveLength(0);
     expect(await db.select().from(agents)).toHaveLength(0);
     expect(await db.select().from(pipelines)).toHaveLength(0);
 
     const applied = await seedMinionCodePortfolio(db, { ...seedInput, apply: true });
     expect(applied.applied).toBe(true);
     expect(Object.keys(applied.projectIds)).toHaveLength(MINION_CODE_PROJECTS.length);
+    expect(Object.keys(applied.workspaceIds)).toHaveLength(MINION_CODE_PROJECTS.length - 1);
     expect(Object.keys(applied.agentIds)).toHaveLength(7);
     expect(Object.keys(applied.harnessRevisionIds)).toHaveLength(7);
     expect(applied.githubIntakeActivation).toMatchObject({
@@ -113,15 +181,18 @@ describeDb('MINION Code portfolio seed', () => {
       'Hermes learning reviewer remains paused until a target-environment model probe succeeds.',
     );
 
-    const [portfolioRows, projectRows, agentRows, pipelineRows, harnessRows] = await Promise.all([
-      db.select().from(portfolios),
-      db.select().from(projects),
-      db.select().from(agents),
-      db.select().from(pipelines),
-      db.select().from(agentHarnessRevisions),
-    ]);
+    const [portfolioRows, projectRows, workspaceRows, agentRows, pipelineRows, harnessRows] =
+      await Promise.all([
+        db.select().from(portfolios),
+        db.select().from(projects),
+        db.select().from(projectWorkspaces),
+        db.select().from(agents),
+        db.select().from(pipelines),
+        db.select().from(agentHarnessRevisions),
+      ]);
     expect(portfolioRows).toHaveLength(1);
     expect(projectRows).toHaveLength(MINION_CODE_PROJECTS.length);
+    expect(workspaceRows).toHaveLength(MINION_CODE_PROJECTS.length - 1);
     expect(agentRows).toHaveLength(7);
     expect(pipelineRows).toHaveLength(1);
     expect(harnessRows).toHaveLength(7);
@@ -145,6 +216,33 @@ describeDb('MINION Code portfolio seed', () => {
       groupKey: 'minion_hub',
       routing: { scopes: ['workforce', 'core'] },
     });
+    const workforceWorkspace = workspaceRows.find(
+      (workspace) => workspace.id === applied.workspaceIds['workforce-projects'],
+    );
+    expect(workforceWorkspace).toMatchObject({
+      projectId: applied.projectIds['workforce-projects'],
+      sourceType: 'git_repo',
+      cwd: '/srv/minion/minion-hub',
+      repoRef: 'origin/dev',
+      defaultRef: 'origin/dev',
+      isPrimary: true,
+    });
+    expect(workforceWorkspace?.metadata).toMatchObject({
+      minionSeedKey: 'minion-code:workspace:workforce-projects',
+      repositoryKey: 'minion-hub',
+    });
+    expect(workforce?.executionWorkspacePolicy).toMatchObject({
+      enabled: true,
+      defaultMode: 'isolated_workspace',
+      allowIssueOverride: false,
+      defaultProjectWorkspaceId: workforceWorkspace?.id,
+      workspaceStrategy: {
+        type: 'git_worktree',
+        baseRef: 'origin/dev',
+        worktreeParentDir: '/srv/minion-worktrees/minion-hub',
+      },
+    });
+    expect(intake?.executionWorkspacePolicy).toBeNull();
 
     const bySeedKey = new Map(
       agentRows.map((agent) => [String(agent.metadata?.minionSeedKey), agent]),
@@ -217,6 +315,9 @@ describeDb('MINION Code portfolio seed', () => {
     expect(rerun.actions.every((action) => action.operation === 'unchanged')).toBe(true);
     expect(await db.select().from(portfolios)).toHaveLength(1);
     expect(await db.select().from(projects)).toHaveLength(MINION_CODE_PROJECTS.length);
+    expect(await db.select().from(projectWorkspaces)).toHaveLength(
+      MINION_CODE_PROJECTS.length - 1,
+    );
     expect(await db.select().from(agents)).toHaveLength(7);
     expect(await db.select().from(pipelines)).toHaveLength(1);
     expect(await db.select().from(agentHarnessRevisions)).toHaveLength(7);

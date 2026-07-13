@@ -1,6 +1,10 @@
 #!/usr/bin/env tsx
 import { createDb } from '@paperclipai/db';
-import { seedMinionCodePortfolio } from '../src/services/minion-code-portfolio-seed.js';
+import {
+  seedMinionCodePortfolio,
+  type MinionCodeRepositoryKey,
+  type MinionCodeRepositoryWorkspaceInput,
+} from '../src/services/minion-code-portfolio-seed.js';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -17,6 +21,24 @@ function required(name: string, envName?: string): string {
   return value.trim();
 }
 
+function repositoryWorkspaces(): Record<
+  MinionCodeRepositoryKey,
+  MinionCodeRepositoryWorkspaceInput
+> {
+  const raw = required(
+    '--repository-workspaces-json',
+    'MINION_CODE_REPOSITORY_WORKSPACES_JSON',
+  );
+  try {
+    return JSON.parse(raw) as Record<
+      MinionCodeRepositoryKey,
+      MinionCodeRepositoryWorkspaceInput
+    >;
+  } catch {
+    throw new Error('--repository-workspaces-json must be valid JSON');
+  }
+}
+
 async function main() {
   if (process.argv.includes('--help')) {
     console.log(`Usage:
@@ -26,12 +48,15 @@ async function main() {
     [--release-approver-user-id <user-id>] \\
     --gateway-url <ws-or-wss-url> \\
     --gateway-token-secret-id <company-secret-uuid> \\
+    --repository-workspaces-json <json> \\
     [--probed-hermes-model <model-id>] \\
     [--apply] [--json]
 
 Dry-run is the default. The gateway token must already exist as a company
 secret; this command never accepts or persists its plaintext value. Use --json
-to emit pipelineId, intakeProjectId, and deterministic route rules for intake.`);
+to emit pipelineId, intakeProjectId, workspaceIds, and deterministic route rules
+for intake. Workspace JSON must configure all seven routed repositories with
+absolute cwd/worktreeParentDir paths plus repoUrl and baseRef.`);
     return;
   }
 
@@ -47,6 +72,7 @@ to emit pipelineId, intakeProjectId, and deterministic route rules for intake.`)
       '--gateway-token-secret-id',
       'MINION_GATEWAY_TOKEN_SECRET_ID',
     ),
+    repositoryWorkspaces: repositoryWorkspaces(),
     probedHermesModel:
       option('--probed-hermes-model') ?? process.env.MINION_CODE_PROBED_HERMES_MODEL,
     apply: process.argv.includes('--apply'),
