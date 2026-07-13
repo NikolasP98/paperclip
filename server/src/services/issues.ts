@@ -4552,16 +4552,17 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const childProjectId = issueData.projectId ?? parent.projectId;
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
+        projectId: childProjectId,
         goalId: issueData.goalId ?? parent.goalId,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        inheritExecutionWorkspaceFromIssueId: childProjectId === parent.projectId ? parent.id : null,
       });
 
       if (blockParentUntilDone) {
@@ -4859,6 +4860,10 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
+      const workspaceInheritanceSourceWasSpecified = Object.prototype.hasOwnProperty.call(
+        data,
+        "inheritExecutionWorkspaceFromIssueId",
+      );
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -4890,7 +4895,9 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const workspaceInheritanceIssueId = workspaceInheritanceSourceWasSpecified
+          ? inheritExecutionWorkspaceFromIssueId
+          : issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
