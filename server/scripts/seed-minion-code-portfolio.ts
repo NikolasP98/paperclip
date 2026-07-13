@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
-import { createDb } from '@paperclipai/db';
 import {
   seedMinionCodePortfolio,
   type MinionCodeRepositoryKey,
   type MinionCodeRepositoryWorkspaceInput,
 } from '../src/services/minion-code-portfolio-seed.js';
+import { withMinionCodeSeedDatabase } from '../src/services/minion-code-seed-database.js';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -61,22 +61,23 @@ absolute cwd/worktreeParentDir paths plus repoUrl and baseRef.`);
   }
 
   const databaseUrl = required('DATABASE_URL', 'DATABASE_URL');
-  const db = createDb(databaseUrl);
-  const result = await seedMinionCodePortfolio(db, {
-    companyId: required('--company-id', 'PAPERCLIP_COMPANY_ID'),
-    planApproverUserId: required('--plan-approver-user-id', 'MINION_CODE_PLAN_APPROVER_USER_ID'),
-    releaseApproverUserId:
-      option('--release-approver-user-id') ?? process.env.MINION_CODE_RELEASE_APPROVER_USER_ID,
-    minionGatewayUrl: required('--gateway-url', 'MINION_GATEWAY_URL'),
-    minionGatewayTokenSecretId: required(
-      '--gateway-token-secret-id',
-      'MINION_GATEWAY_TOKEN_SECRET_ID',
-    ),
-    repositoryWorkspaces: repositoryWorkspaces(),
-    probedHermesModel:
-      option('--probed-hermes-model') ?? process.env.MINION_CODE_PROBED_HERMES_MODEL,
-    apply: process.argv.includes('--apply'),
-  });
+  const result = await withMinionCodeSeedDatabase(databaseUrl, (db) =>
+    seedMinionCodePortfolio(db, {
+      companyId: required('--company-id', 'PAPERCLIP_COMPANY_ID'),
+      planApproverUserId: required('--plan-approver-user-id', 'MINION_CODE_PLAN_APPROVER_USER_ID'),
+      releaseApproverUserId:
+        option('--release-approver-user-id') ?? process.env.MINION_CODE_RELEASE_APPROVER_USER_ID,
+      minionGatewayUrl: required('--gateway-url', 'MINION_GATEWAY_URL'),
+      minionGatewayTokenSecretId: required(
+        '--gateway-token-secret-id',
+        'MINION_GATEWAY_TOKEN_SECRET_ID',
+      ),
+      repositoryWorkspaces: repositoryWorkspaces(),
+      probedHermesModel:
+        option('--probed-hermes-model') ?? process.env.MINION_CODE_PROBED_HERMES_MODEL,
+      apply: process.argv.includes('--apply'),
+    }),
+  );
 
   if (process.argv.includes('--json')) {
     console.log(JSON.stringify(result, null, 2));
