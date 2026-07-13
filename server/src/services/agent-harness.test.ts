@@ -51,6 +51,20 @@ describe("agent living harness", () => {
       model: "claude-haiku-4-5",
       bridgePending: true,
     });
+    const evaluator = harnessPolicyPreset({
+      name: "code-evaluator",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+    });
+    expect(evaluator.runtime.recommended.primary).toMatchObject({
+      runtimeKind: "minion_drone",
+      adapterType: "minion_drone",
+      model: "gpt-5.4",
+      provider: "openai",
+      executable: true,
+    });
+    expect(evaluator.runtime.recommended.primary).not.toHaveProperty("bridgePending");
+    expect(evaluator.runtime.recommended.fallbacks).toEqual([]);
     expect(implementer.runtime.activeCapabilities).toEqual({
       tools: ["edit", "git", "github", "read", "shell"],
       skills: [

@@ -121,7 +121,7 @@ export function guidanceForRole(roleKey: AgentHarnessRoleKey) {
     "spec-planner":
       "Produce a bounded implementation spec and explicit child-work proposal from the parent issue, project charter, repository instructions, and prior feedback. Do not edit code or create subtasks directly; exact-once decomposition occurs only after plan approval.",
     implementer:
-      "Fix the root cause with the smallest safe diff. Read prior feedback first, add focused regression coverage, run focused checks, push only the issue branch, and open a draft PR. Record exactly one primary GitHub pull_request work product on the implementation task with explicit headSha, baseRef, baseSha, and typed checks metadata. Never merge or push a default branch.",
+      "Fix the root cause with the smallest safe diff. Read prior feedback first, add focused regression coverage, run focused checks, push only the issue branch, and open a draft PR. Record exactly one primary GitHub pull_request work product on the implementation task with explicit headSha, baseRef, baseSha, typed checks, implementation summary, changedFiles, bounded diff, and typed testResults metadata. Never merge or push a default branch.",
     evaluator:
       "Read-only evaluation: inspect the approved spec, implementation work product, diff, and focused checks. Do not edit or push. Apply the versioned rubric and submit status, findings, and typed evalScore together. A failing score creates a new implementation iteration rather than rewriting history.",
     "code-merger":
@@ -160,6 +160,8 @@ const selection = (
 });
 const droneSelection = (model: string, provider: string) =>
   selection(null, model, provider, "minion_drone", false);
+const connectedDroneSelection = (model: string, provider: string) =>
+  selection("minion_drone", model, provider, "minion_drone", true);
 
 export function observedHarnessConfig(agent: {
   adapterType: string;
@@ -327,9 +329,9 @@ export function harnessPolicyPreset(agent: {
         }
       : roleKey === "evaluator"
         ? {
-            primary: selection("codex_local", "gpt-5.4", "openai"),
-            fallbacks: [selection("claude_local", "claude-opus-4-7", "anthropic")],
-            canaries: [droneSelection("gpt-5.4", "openai")],
+            primary: connectedDroneSelection("gpt-5.4", "openai"),
+            fallbacks: [],
+            canaries: [],
           }
         : roleKey === "code-merger"
           ? {

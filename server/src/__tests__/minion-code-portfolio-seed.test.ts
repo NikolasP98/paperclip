@@ -207,7 +207,7 @@ describeDb('MINION Code portfolio seed', () => {
     expect(harnessRows).toHaveLength(7);
 
     const secretBindings = await db.select().from(companySecretBindings);
-    expect(secretBindings).toHaveLength(3);
+    expect(secretBindings).toHaveLength(4);
     expect(
       secretBindings.map((binding) => ({
         targetId: binding.targetId,
@@ -216,7 +216,7 @@ describeDb('MINION Code portfolio seed', () => {
       })),
     ).toEqual(
       expect.arrayContaining(
-        (['classifier', 'planner', 'merger'] as const).map((role) => ({
+        (['classifier', 'planner', 'evaluator', 'merger'] as const).map((role) => ({
           targetId: applied.agentIds[role],
           configPath: 'env.MINION_GATEWAY_TOKEN',
           secretId: seedInput.minionGatewayTokenSecretId,
@@ -274,7 +274,7 @@ describeDb('MINION Code portfolio seed', () => {
     const bySeedKey = new Map(
       agentRows.map((agent) => [String(agent.metadata?.minionSeedKey), agent]),
     );
-    for (const role of ['classifier', 'planner', 'merger'] as const) {
+    for (const role of ['classifier', 'planner', 'evaluator', 'merger'] as const) {
       const agent = bySeedKey.get(`minion-code:agent:${role}`);
       expect(agent?.adapterType).toBe('minion_drone');
       expect(agent?.adapterConfig).not.toHaveProperty('model');
@@ -294,6 +294,9 @@ describeDb('MINION Code portfolio seed', () => {
     });
     expect(bySeedKey.get('minion-code:agent:planner')?.adapterConfig).toMatchObject({
       droneId: 'portfolio-spec-planner-v1',
+    });
+    expect(bySeedKey.get('minion-code:agent:evaluator')?.adapterConfig).toMatchObject({
+      droneId: 'portfolio-implementation-evaluator-v1',
     });
     expect(bySeedKey.get('minion-code:agent:merger')?.adapterConfig).toMatchObject({
       droneId: 'portfolio-merge-readiness-v1',
@@ -416,7 +419,11 @@ describeDb('MINION Code portfolio seed', () => {
       },
     });
     expect(implementer?.metadata).toMatchObject({ minionSeedKey: 'minion-code:agent:implementer' });
-    expect(evaluator).toMatchObject({ name: 'code-evaluator', adapterType: 'codex_local' });
+    expect(evaluator).toMatchObject({
+      name: 'code-evaluator',
+      adapterType: 'minion_drone',
+      adapterConfig: { droneId: 'portfolio-implementation-evaluator-v1' },
+    });
     expect(reviewer).toMatchObject({
       name: 'bug-reviewer',
       adapterType: 'claude_local',

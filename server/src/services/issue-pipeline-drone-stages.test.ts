@@ -27,13 +27,17 @@ import { documentService } from './documents.js';
 import { issueService } from './issues.js';
 import {
   finalizePipelineDroneHeartbeat,
+  implementationEvaluatorDroneInputSchema,
+  implementationEvaluatorDroneOutputSchema,
   mergeEvidenceReady,
   mergeReadinessDroneInputSchema,
   plannerDroneOutputSchema,
+  PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
   PORTFOLIO_SPEC_PLANNER_DRONE_ID,
   PORTFOLIO_MERGE_READINESS_DRONE_ID,
   queuePipelineStageTaskWakeup,
   renderPlannerArtifact,
+  validateImplementationEvaluationDecision,
   validateMergeReadinessDecision,
 } from './issue-pipeline-drone-stages.js';
 
@@ -96,6 +100,42 @@ describe('pipeline Drone contracts', () => {
         summary: 'Ready',
       }),
     ).toThrow(/contradicted frozen evidence/);
+  });
+
+  it('requires evaluator rubric scores to cover the frozen criteria exactly once', () => {
+    const input = implementationEvaluatorDroneInputSchema.parse({
+      issue: {
+        source: 'github',
+        repository: 'NikolasP98/minion_hub',
+        externalId: '56',
+        title: 'Fix storage fallback',
+        body: 'localStorage can throw.',
+        labels: ['bug'],
+      },
+      approvedSpec: '# Plan',
+      implementation: {
+        summary: 'Guard storage access.',
+        changedFiles: ['src/lib/theme.ts'],
+        diff: '+ try { localStorage.setItem(...) } catch {}',
+        testResults: [{ command: 'bun test theme', status: 'passed', output: 'green' }],
+      },
+      rubric: [
+        { key: 'correctness', description: 'Fixes the root cause.', weight: 5 },
+        { key: 'coverage', description: 'Includes a regression test.', weight: 5 },
+      ],
+      passingScore: 7,
+    });
+    const output = implementationEvaluatorDroneOutputSchema.parse({
+      score: 8,
+      rubricScores: [{ key: 'correctness', score: 8, rationale: 'Guard is present.' }],
+      findings: [],
+      requiredChanges: [],
+      recommendation: 'approve',
+      summary: 'Mostly complete.',
+    });
+    expect(() => validateImplementationEvaluationDecision(input, output)).toThrow(
+      /rubric keys do not match frozen input/,
+    );
   });
 });
 
@@ -383,6 +423,340 @@ describeDb('merge-readiness finalizer', () => {
     expect(await documentService(db).listIssueDocumentRevisions(root.id, 'plan')).toHaveLength(1);
   });
 
+  it('freezes implementation evidence and turns a failing evaluator Drone score into a traced retry', async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const pipelineId = randomUUID();
+    const plannerId = randomUUID();
+    const implementerId = randomUUID();
+    const evaluatorId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: 'MINION evaluation',
+      issuePrefix: `E${companyId.slice(0, 6)}`.toUpperCase(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: 'Hub',
+      description: 'Minion Hub concerns.',
+      status: 'in_progress',
+      metadata: { repositoryKey: 'minion-hub' },
+    });
+    await db.insert(agents).values([
+      {
+        id: plannerId,
+        companyId,
+        name: 'spec-planner',
+        role: 'pm',
+        status: 'idle',
+        adapterType: 'process',
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: implementerId,
+        companyId,
+        name: 'bug-fixer',
+        role: 'engineer',
+        status: 'idle',
+        adapterType: 'process',
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: evaluatorId,
+        companyId,
+        name: 'code-evaluator',
+        role: 'qa',
+        status: 'idle',
+        adapterType: 'minion_drone',
+        adapterConfig: { droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const snapshot: IssuePipelineSnapshot = {
+      pipelineId,
+      name: 'Plan, implement, evaluate',
+      description: null,
+      executionMode: 'stage_tasks',
+      trigger: null,
+      steps: [
+        {
+          key: 'plan',
+          kind: 'work',
+          label: 'Plan',
+          participant: { type: 'agent', agentId: plannerId },
+        },
+        {
+          key: 'implement',
+          kind: 'work',
+          label: 'Implement',
+          participant: { type: 'agent', agentId: implementerId },
+        },
+        {
+          key: 'evaluate',
+          kind: 'eval',
+          label: 'Evaluate',
+          participant: { type: 'agent', agentId: evaluatorId },
+          rubric: 'Score correctness, spec coverage, regression protection, evidence, and safety.',
+          minScore: 7,
+          maxScore: 10,
+          onFailStepKey: 'implement',
+          maxAttempts: 3,
+        },
+      ],
+    };
+    await db.insert(pipelines).values({
+      id: pipelineId,
+      companyId,
+      projectId: null,
+      name: snapshot.name,
+      executionMode: 'stage_tasks',
+      trigger: null,
+      steps: snapshot.steps as unknown as Record<string, unknown>[],
+    });
+    const root = await issueService(db).create(companyId, {
+      title: 'Fix unavailable localStorage',
+      description: 'Theme preference writes throw when localStorage is unavailable.',
+      status: 'todo',
+      priority: 'high',
+      projectId,
+      originKind: 'github_issue',
+      originId: 'NikolasP98/minion_hub#56',
+    });
+    const started = await issuePipelineOrchestrator(issuePipelineOrchestratorRepository(db)).start({
+      companyId,
+      selectedProjectId: projectId,
+      issueId: root.id,
+      sourceKey: 'NikolasP98/minion_hub#56:evaluation',
+      pipelineSnapshot: snapshot,
+      routingSnapshot: {
+        repository: 'NikolasP98/minion_hub',
+        originalLabels: ['bug'],
+        inferredLabels: ['bug'],
+        classifierOutput: {
+          labels: ['bug'],
+          scopes: ['ui'],
+          projectKey: 'hub',
+          confidence: 0.99,
+          rationale: 'Hub theme behavior.',
+        },
+        candidates: [],
+        selectedPortfolioId: null,
+        selectedProjectId: projectId,
+        confidence: 0.99,
+        resolution: 'rule',
+        reason: 'test',
+      },
+    });
+    const planOutput = plannerDroneOutputSchema.parse({
+      objective: 'Keep theme changes working when localStorage is unavailable.',
+      assumptions: [],
+      subtasks: [
+        {
+          key: 'storage-fallback',
+          title: 'Add storage fallback',
+          description: 'Make theme persistence best effort.',
+          acceptanceCriteria: ['Theme changes remain usable in memory.'],
+          dependsOn: [],
+        },
+      ],
+      risks: [],
+      testPlan: ['Run the focused theme tests.'],
+    });
+    const plan = await documentService(db).upsertIssueDocument({
+      issueId: root.id,
+      key: 'plan',
+      title: 'Implementation Plan',
+      format: 'markdown',
+      body: renderPlannerArtifact(planOutput),
+      createdByAgentId: plannerId,
+    });
+    await issueService(db).update(started.stageTask.issueId, { status: 'done' });
+    let implementStage: (typeof started)['stageTask'] | null = null;
+    let run = await issuePipelineOrchestrator(
+      issuePipelineOrchestratorRepository(db),
+    ).completeStageTask(
+      {
+        runId: started.run.id,
+        stageTaskId: started.stageTask.issueId,
+        terminalStatus: 'done',
+        outcome: 'passed',
+        summary: planOutput.objective,
+        trace: {
+          outputSnapshot: {
+            validatedOutput: planOutput,
+            planDocumentId: plan.document.id,
+            planRevisionId: plan.document.latestRevisionId,
+          },
+        },
+      },
+      (transition) => {
+        implementStage = transition.nextStageTask;
+      },
+    );
+    expect(implementStage).toMatchObject({ stageKey: 'implement', attempt: 1 });
+    const headSha = 'a'.repeat(40);
+    const baseSha = 'b'.repeat(40);
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      projectId,
+      issueId: implementStage!.issueId,
+      type: 'pull_request',
+      provider: 'github',
+      externalId: '60',
+      title: 'Fix localStorage fallback',
+      url: 'https://github.com/NikolasP98/minion_hub/pull/60',
+      status: 'ready_for_review',
+      reviewState: 'needs_board_review',
+      isPrimary: true,
+      summary: 'Guard theme storage reads and writes.',
+      metadata: {
+        headSha,
+        baseRef: 'dev',
+        baseSha,
+        checks: [{ name: 'bun test theme', status: 'passed', summary: '8 tests passed' }],
+        implementation: {
+          changedFiles: ['src/lib/state/theme.ts', 'src/lib/state/theme.test.ts'],
+          diff: '+try { storage.setItem(key, value); } catch { /* best effort */ }',
+          testResults: [{ command: 'bun test theme', status: 'passed', output: '8 tests passed' }],
+        },
+      },
+    });
+    await issueService(db).update(implementStage!.issueId, { status: 'done' });
+    let evaluatorStage: (typeof started)['stageTask'] | null = null;
+    run = await issuePipelineOrchestrator(
+      issuePipelineOrchestratorRepository(db),
+    ).completeStageTask(
+      {
+        runId: run.id,
+        stageTaskId: implementStage!.issueId,
+        terminalStatus: 'done',
+        outcome: 'passed',
+        summary: 'Implementation ready for independent evaluation.',
+      },
+      (transition) => {
+        evaluatorStage = transition.nextStageTask;
+      },
+    );
+    expect(evaluatorStage).toMatchObject({ stageKey: 'evaluate', attempt: 1 });
+    const evaluatorWake = vi.fn().mockResolvedValue({ id: 'evaluate-wake' });
+    await queuePipelineStageTaskWakeup({
+      db,
+      heartbeat: { wakeup: evaluatorWake },
+      run,
+      stageTask: evaluatorStage!,
+    });
+    const evaluatorContext = evaluatorWake.mock.calls[0]?.[1].contextSnapshot;
+    expect(evaluatorContext).toMatchObject({
+      paperclipDrone: {
+        input: {
+          approvedSpec: expect.stringContaining('Keep theme changes working'),
+          implementation: {
+            changedFiles: ['src/lib/state/theme.ts', 'src/lib/state/theme.test.ts'],
+            diff: expect.stringContaining('storage.setItem'),
+            testResults: [
+              { command: 'bun test theme', status: 'passed', output: '8 tests passed' },
+            ],
+          },
+          passingScore: 7,
+        },
+      },
+      pipelineDroneStage: {
+        stageKey: 'evaluate',
+        droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+      },
+    });
+    const rubricKeys = implementationEvaluatorDroneInputSchema
+      .parse(evaluatorContext.paperclipDrone.input)
+      .rubric.map((criterion) => criterion.key);
+    const evaluatorOutput = implementationEvaluatorDroneOutputSchema.parse({
+      score: 6,
+      rubricScores: rubricKeys.map((key) => ({
+        key,
+        score: 6,
+        rationale: `${key} needs stronger evidence.`,
+      })),
+      findings: [
+        {
+          severity: 'major',
+          title: 'Missing throwing-read coverage',
+          evidence: 'The supplied test output does not identify a throwing getter case.',
+        },
+      ],
+      requiredChanges: ['Add regression coverage for a throwing localStorage getter.'],
+      specDelta:
+        'Explicitly exercise storage accessors that throw before returning a Storage object.',
+      recommendation: 'revise',
+      summary: 'The write path is guarded, but read-path regression evidence is incomplete.',
+    });
+    const [heartbeat] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId: evaluatorId,
+        status: 'succeeded',
+        invocationSource: 'assignment',
+        contextSnapshot: evaluatorContext,
+        resultJson: {
+          droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+          output: evaluatorOutput,
+        },
+        resolvedAdapterType: 'minion_drone',
+        resolvedModel: 'gpt-5.4',
+        resolvedProvider: 'openai',
+        finishedAt: new Date(),
+      })
+      .returning();
+    const retryWake = vi.fn().mockResolvedValue({ id: 'retry-wake' });
+    const finalized = await finalizePipelineDroneHeartbeat({
+      db,
+      heartbeat: { wakeup: retryWake },
+      run: heartbeat!,
+    });
+    const replay = await finalizePipelineDroneHeartbeat({
+      db,
+      heartbeat: { wakeup: retryWake },
+      run: heartbeat!,
+    });
+
+    expect(finalized.status).toBe('changes_requested');
+    expect(finalized.run).toMatchObject({ status: 'active', currentStepKey: 'implement' });
+    expect(replay.status).toBe('reconciled');
+    expect(retryWake).toHaveBeenCalledTimes(1);
+    const transition = 'transition' in finalized ? finalized.transition : undefined;
+    if (!transition) throw new Error('evaluator finalizer omitted transition');
+    const retryStage = transition.nextStageTask;
+    expect(retryStage).toMatchObject({ stageKey: 'implement', attempt: 2 });
+    const retryIssue = await issueService(db).getById(retryStage!.issueId);
+    expect(retryIssue?.description).toContain('Evaluator feedback for this retry');
+    expect(retryIssue?.description).toContain('Missing throwing-read coverage');
+    expect(retryIssue?.description).toContain('Explicitly exercise storage accessors');
+    const terminal = await db
+      .select()
+      .from(issuePipelineEvents)
+      .where(eq(issuePipelineEvents.eventKey, `stage-terminal:${evaluatorStage!.issueId}`))
+      .then((rows) => rows[0]);
+    expect(terminal).toMatchObject({
+      eventType: 'stage_failed',
+      score: 6,
+      maxScore: 10,
+      resolvedAdapterType: 'minion_drone',
+      resolvedModel: 'gpt-5.4',
+      resolvedProvider: 'openai',
+      outputSnapshot: {
+        finalizationStatus: 'changes_requested',
+        validatedOutput: { score: 6, recommendation: 'revise' },
+      },
+      decisionSnapshot: { outcome: 'failed', score: 6, passingScore: 7 },
+    });
+  });
+
   it('completes orchestration without merging, pushing, or mutating the PR work product', async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -607,7 +981,9 @@ describeDb('merge-readiness finalizer', () => {
       reviewState: 'approved',
       metadata: { headSha, baseRef: 'dev', baseSha },
     });
-    expect(await db.select().from(issueWorkProducts)).toHaveLength(1);
+    expect(
+      await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.companyId, companyId)),
+    ).toHaveLength(1);
     const terminal = await db
       .select()
       .from(issuePipelineEvents)

@@ -32,6 +32,8 @@ import { issuePipelineOrchestratorRepository } from './issue-pipeline-repository
 import { issueService } from './issues.js';
 
 export const PORTFOLIO_SPEC_PLANNER_DRONE_ID = 'portfolio-spec-planner-v1' as const;
+export const PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID =
+  'portfolio-implementation-evaluator-v1' as const;
 export const PORTFOLIO_MERGE_READINESS_DRONE_ID = 'portfolio-merge-readiness-v1' as const;
 const PIPELINE_DRONE_CONTEXT_KIND = 'issue_pipeline_drone_stage_v1' as const;
 
@@ -129,6 +131,70 @@ export const plannerDroneOutputSchema = z
     }
   });
 
+const implementationTestResultSchema = z
+  .object({
+    command: boundedText(500),
+    status: z.enum(['passed', 'failed', 'not_run']),
+    output: z.string().max(10_000),
+  })
+  .strict();
+
+const evaluationRubricCriterionSchema = z
+  .object({
+    key: boundedText(80),
+    description: boundedText(2_000),
+    weight: z.number().positive().max(10),
+  })
+  .strict();
+
+export const implementationEvaluatorDroneInputSchema = z
+  .object({
+    issue: issueReferenceSchema,
+    approvedSpec: boundedText(50_000),
+    implementation: z
+      .object({
+        summary: boundedText(10_000),
+        changedFiles: z.array(boundedText(500)).max(256),
+        diff: z.string().max(120_000),
+        testResults: z.array(implementationTestResultSchema).max(40),
+      })
+      .strict(),
+    rubric: z.array(evaluationRubricCriterionSchema).min(1).max(20),
+    passingScore: z.number().min(0).max(10),
+  })
+  .strict();
+
+const evaluationFindingSchema = z
+  .object({
+    severity: z.enum(['blocker', 'major', 'minor', 'note']),
+    title: boundedText(300),
+    evidence: boundedText(4_000),
+  })
+  .strict();
+
+export const implementationEvaluatorDroneOutputSchema = z
+  .object({
+    score: z.number().min(0).max(10),
+    rubricScores: z
+      .array(
+        z
+          .object({
+            key: boundedText(80),
+            score: z.number().min(0).max(10),
+            rationale: boundedText(2_000),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(20),
+    findings: z.array(evaluationFindingSchema).max(30),
+    requiredChanges: z.array(boundedText(2_000)).max(30),
+    specDelta: z.string().max(10_000).optional(),
+    recommendation: z.enum(['approve', 'revise', 'reject']),
+    summary: boundedText(4_000),
+  })
+  .strict();
+
 const mergeCheckSchema = z
   .object({
     name: boundedText(240),
@@ -174,6 +240,45 @@ const pullRequestMetadataSchema = z
   })
   .passthrough();
 
+const implementationEvidenceMetadataSchema = z
+  .object({
+    summary: boundedText(10_000).optional(),
+    changedFiles: z.array(boundedText(500)).max(256).optional(),
+    diff: z.string().max(120_000).optional(),
+    testResults: z.array(implementationTestResultSchema).max(40).optional(),
+  })
+  .passthrough();
+
+const IMPLEMENTATION_EVALUATION_RUBRIC = [
+  {
+    key: 'root-cause-correctness',
+    description: 'The implementation fixes the demonstrated root cause without masking it.',
+    weight: 2,
+  },
+  {
+    key: 'approved-spec-coverage',
+    description:
+      'The implementation satisfies the accepted objective and traced plan requirements.',
+    weight: 2,
+  },
+  {
+    key: 'regression-protection',
+    description: 'Focused automated coverage would fail before the fix and pass after it.',
+    weight: 2,
+  },
+  {
+    key: 'verification-evidence',
+    description: 'The supplied checks and test results demonstrate the claimed behavior.',
+    weight: 2,
+  },
+  {
+    key: 'repository-safety',
+    description:
+      'The diff is scoped, preserves repository conventions, and avoids unsafe branch actions.',
+    weight: 2,
+  },
+] as const;
+
 const pipelineDroneContextSchema = z
   .object({
     kind: z.literal(PIPELINE_DRONE_CONTEXT_KIND),
@@ -181,7 +286,11 @@ const pipelineDroneContextSchema = z
     stageTaskId: z.string().uuid(),
     stageKey: boundedText(64),
     attempt: z.number().int().positive(),
-    droneId: z.enum([PORTFOLIO_SPEC_PLANNER_DRONE_ID, PORTFOLIO_MERGE_READINESS_DRONE_ID]),
+    droneId: z.enum([
+      PORTFOLIO_SPEC_PLANNER_DRONE_ID,
+      PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+      PORTFOLIO_MERGE_READINESS_DRONE_ID,
+    ]),
   })
   .strict();
 
@@ -202,6 +311,8 @@ type PipelineHeartbeatRun = Pick<
 >;
 
 type PlannerOutput = z.infer<typeof plannerDroneOutputSchema>;
+type ImplementationEvaluatorInput = z.infer<typeof implementationEvaluatorDroneInputSchema>;
+type ImplementationEvaluatorOutput = z.infer<typeof implementationEvaluatorDroneOutputSchema>;
 type MergeReadinessInput = z.infer<typeof mergeReadinessDroneInputSchema>;
 type MergeReadinessOutput = z.infer<typeof mergeReadinessDroneOutputSchema>;
 
@@ -560,7 +671,47 @@ function readPullRequestMetadata(metadata: unknown) {
   return pullRequestMetadataSchema.parse(metadata);
 }
 
-async function loadPrimaryPullRequestEvidence(db: Db, run: IssuePipelineRun) {
+async function loadAcceptedPlanSpec(db: Db, run: IssuePipelineRun) {
+  const planEvent = await db
+    .select({ outputSnapshot: issuePipelineEvents.outputSnapshot })
+    .from(issuePipelineEvents)
+    .where(
+      and(
+        eq(issuePipelineEvents.pipelineRunId, run.id),
+        eq(issuePipelineEvents.stepKey, 'plan'),
+        eq(issuePipelineEvents.eventType, 'stage_completed'),
+      ),
+    )
+    .orderBy(desc(issuePipelineEvents.sequence))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!planEvent) throw new Error('implementation evaluation requires a completed Plan artifact');
+  const planSnapshot = asRecord(planEvent.outputSnapshot);
+  plannerDroneOutputSchema.parse(planSnapshot.validatedOutput);
+  const planRevisionId = z.string().uuid().parse(planSnapshot.planRevisionId);
+  const revision = await db
+    .select({ body: documentRevisions.body })
+    .from(documentRevisions)
+    .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+    .where(
+      and(
+        eq(documentRevisions.id, planRevisionId),
+        eq(issueDocuments.issueId, run.issueId),
+        eq(issueDocuments.key, 'plan'),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!revision)
+    throw new Error('accepted Plan revision is not attached to the pipeline root issue');
+  return { planRevisionId, body: boundedText(50_000).parse(revision.body) };
+}
+
+async function loadPrimaryPullRequestEvidence(
+  db: Db,
+  run: IssuePipelineRun,
+  reviewableStatuses: readonly string[] = ['ready_for_review', 'approved'],
+) {
   const stageIssues = await db
     .select({ id: issues.id, originFingerprint: issues.originFingerprint })
     .from(issues)
@@ -579,7 +730,7 @@ async function loadPrimaryPullRequestEvidence(db: Db, run: IssuePipelineRun) {
     .sort((left, right) => Number(right.match[1]) - Number(left.match[1]));
   const latestImplementIssueId = implementTasks[0]?.row.id;
   if (!latestImplementIssueId)
-    throw new Error('merge readiness requires a materialized implementation stage');
+    throw new Error('pipeline review requires a materialized implementation stage');
   const candidateIssueIds = [latestImplementIssueId, run.issueId];
   const products = await db
     .select()
@@ -595,11 +746,11 @@ async function loadPrimaryPullRequestEvidence(db: Db, run: IssuePipelineRun) {
     );
   if (products.length !== 1) {
     throw new Error(
-      `merge readiness requires exactly one primary GitHub pull_request work product; found ${products.length}`,
+      `pipeline review requires exactly one primary GitHub pull_request work product; found ${products.length}`,
     );
   }
   const product = products[0]!;
-  if (!['ready_for_review', 'approved'].includes(product.status)) {
+  if (!reviewableStatuses.includes(product.status)) {
     throw new Error(
       `primary GitHub pull_request work product is not reviewable: ${product.status}`,
     );
@@ -618,6 +769,59 @@ async function loadPrimaryPullRequestEvidence(db: Db, run: IssuePipelineRun) {
       checks: metadata.checks,
     },
   };
+}
+
+function implementationEvidenceFromProduct(
+  evidence: Awaited<ReturnType<typeof loadPrimaryPullRequestEvidence>>,
+) {
+  const metadata = asRecord(evidence.product.metadata);
+  const nested = implementationEvidenceMetadataSchema.parse(asRecord(metadata.implementation));
+  const topLevel = implementationEvidenceMetadataSchema.parse(metadata);
+  const checksAsTests = evidence.metadata.checks.map((check) => ({
+    command: check.name,
+    status:
+      check.status === 'passed'
+        ? ('passed' as const)
+        : check.status === 'failed'
+          ? ('failed' as const)
+          : ('not_run' as const),
+    output: check.summary,
+  }));
+  return {
+    summary:
+      nested.summary ??
+      topLevel.summary ??
+      truncate(evidence.product.summary ?? evidence.product.title, 10_000),
+    changedFiles: nested.changedFiles ?? topLevel.changedFiles ?? [],
+    diff: nested.diff ?? topLevel.diff ?? '',
+    testResults: nested.testResults ?? topLevel.testResults ?? checksAsTests,
+  };
+}
+
+async function buildImplementationEvaluatorInput(
+  db: Db,
+  run: IssuePipelineRun,
+): Promise<ImplementationEvaluatorInput> {
+  const step = run.pipelineSnapshot.steps.find((candidate) => candidate.key === 'evaluate');
+  if (!step || step.kind !== 'eval') {
+    throw new Error('implementation evaluator requires the frozen Evaluate pipeline step');
+  }
+  const passingScore = step.minScore;
+  if (typeof passingScore !== 'number' || passingScore < 0 || passingScore > 10) {
+    throw new Error('implementation evaluator requires a passing score between 0 and 10');
+  }
+  const [{ reference }, acceptedPlan, pullRequest] = await Promise.all([
+    loadRootIssueReference(db, run),
+    loadAcceptedPlanSpec(db, run),
+    loadPrimaryPullRequestEvidence(db, run, ['draft', 'ready_for_review', 'approved']),
+  ]);
+  return implementationEvaluatorDroneInputSchema.parse({
+    issue: reference,
+    approvedSpec: acceptedPlan.body,
+    implementation: implementationEvidenceFromProduct(pullRequest),
+    rubric: IMPLEMENTATION_EVALUATION_RUBRIC,
+    passingScore,
+  });
 }
 
 async function loadReleaseApprovalEvidence(db: Db, run: IssuePipelineRun) {
@@ -688,6 +892,12 @@ async function buildStageDroneContext(
       input: await buildPlannerInput(db, run),
     } as const;
   }
+  if (stageTask.stageKey === 'evaluate') {
+    return {
+      droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+      input: await buildImplementationEvaluatorInput(db, run),
+    } as const;
+  }
   if (stageTask.stageKey === 'merge-readiness') {
     return {
       droneId: PORTFOLIO_MERGE_READINESS_DRONE_ID,
@@ -733,6 +943,7 @@ export async function queuePipelineStageTaskWakeup(input: {
   const isBoundedDrone =
     participantAgent?.adapterType === 'minion_drone' &&
     (configuredDroneId === PORTFOLIO_SPEC_PLANNER_DRONE_ID ||
+      configuredDroneId === PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID ||
       configuredDroneId === PORTFOLIO_MERGE_READINESS_DRONE_ID);
   if (!isBoundedDrone) {
     return queueIssueAssignmentWakeup({
@@ -877,6 +1088,67 @@ export function validateMergeReadinessDecision(
   return expectedReady;
 }
 
+export function validateImplementationEvaluationDecision(
+  input: ImplementationEvaluatorInput,
+  output: ImplementationEvaluatorOutput,
+) {
+  const expectedKeys = new Set(input.rubric.map((criterion) => criterion.key));
+  const observedKeys = output.rubricScores.map((criterion) => criterion.key);
+  if (new Set(observedKeys).size !== observedKeys.length) {
+    throw new Error('implementation evaluation returned duplicate rubric keys');
+  }
+  const missing = [...expectedKeys].filter((key) => !observedKeys.includes(key));
+  const unknown = observedKeys.filter((key) => !expectedKeys.has(key));
+  if (missing.length > 0 || unknown.length > 0) {
+    throw new Error(
+      `implementation evaluation rubric keys do not match frozen input (missing: ${missing.join(', ') || 'none'}; unknown: ${unknown.join(', ') || 'none'})`,
+    );
+  }
+  return output.score >= input.passingScore;
+}
+
+const EVALUATOR_FEEDBACK_START = '<!-- paperclip:evaluator-feedback:start -->';
+const EVALUATOR_FEEDBACK_END = '<!-- paperclip:evaluator-feedback:end -->';
+
+async function attachEvaluatorFeedbackToRetry(input: {
+  db: Db;
+  stageTask: IssuePipelineStageTask;
+  output: ImplementationEvaluatorOutput;
+  passingScore: number;
+}) {
+  if (input.stageTask.stageKey !== 'implement') return;
+  const issue = await issueService(input.db).getById(input.stageTask.issueId);
+  if (!issue) throw new Error(`implementation retry issue not found: ${input.stageTask.issueId}`);
+  const findings = input.output.findings.map(
+    (finding) => `- [${finding.severity}] ${finding.title}: ${finding.evidence}`,
+  );
+  const requiredChanges = input.output.requiredChanges.map((change) => `- ${change}`);
+  const feedback = truncate(
+    [
+      EVALUATOR_FEEDBACK_START,
+      '## Evaluator feedback for this retry',
+      '',
+      `Score: ${input.output.score}/10 (passing: ${input.passingScore}/10)`,
+      `Recommendation: ${input.output.recommendation}`,
+      '',
+      input.output.summary,
+      '',
+      'Findings:',
+      ...(findings.length > 0 ? findings : ['- No detailed findings supplied.']),
+      '',
+      'Required changes:',
+      ...(requiredChanges.length > 0 ? requiredChanges : ['- Address the scored rubric gaps.']),
+      ...(input.output.specDelta
+        ? ['', 'Spec delta for this iteration:', input.output.specDelta]
+        : []),
+      EVALUATOR_FEEDBACK_END,
+    ].join('\n'),
+    24_000,
+  );
+  const description = [issue.description?.trim() || null, feedback].filter(Boolean).join('\n\n');
+  await issueService(input.db).update(issue.id, { description });
+}
+
 async function listStageHeartbeatRuns(db: Db, companyId: string, stageTaskId: string) {
   const rows = await db
     .select()
@@ -970,7 +1242,7 @@ async function queueTransitionStage(input: {
   }
 }
 
-/** Finalizes one attributed Plan or Merge-readiness heartbeat. Replays are idempotent. */
+/** Finalizes one attributed Plan, Evaluate, or Merge-readiness heartbeat. Replays are idempotent. */
 export async function finalizePipelineDroneHeartbeat(input: {
   db: Db;
   heartbeat: IssueAssignmentWakeupDeps;
@@ -1152,6 +1424,94 @@ export async function finalizePipelineDroneHeartbeat(input: {
       transition,
     });
     return { handled: true as const, status: 'completed' as const, run: completed, transition };
+  }
+
+  if (context.data.droneId === PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID) {
+    const parsedInput = implementationEvaluatorDroneInputSchema.safeParse(frozenInput);
+    const parsedOutput = implementationEvaluatorDroneOutputSchema.safeParse(result.output);
+    let decisionError: string | null = null;
+    let passed = false;
+    if (parsedInput.success && parsedOutput.success) {
+      try {
+        passed = validateImplementationEvaluationDecision(parsedInput.data, parsedOutput.data);
+      } catch (error) {
+        decisionError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (!parsedInput.success || !parsedOutput.success || decisionError) {
+      const blocked = await blockDroneStage({
+        db: input.db,
+        run,
+        stageTask,
+        heartbeat: input.run,
+        summary:
+          decisionError ??
+          'Implementation evaluator Drone returned output outside the strict score contract',
+        inputSnapshot: asRecord(frozenInput),
+        outputSnapshot: {
+          finalizationStatus: 'invalid',
+          inputIssues: parsedInput.success ? [] : validationIssues(parsedInput.error),
+          outputIssues: parsedOutput.success ? [] : validationIssues(parsedOutput.error),
+          decisionError,
+        },
+      });
+      return { handled: true as const, status: 'blocked' as const, run: blocked };
+    }
+    const stageIssue = await issueService(input.db).getById(stageTask.issueId);
+    if (stageIssue && stageIssue.status !== 'done') {
+      await issueService(input.db).update(stageIssue.id, { status: 'done' });
+    }
+    const completed = await issuePipelineOrchestrator(
+      issuePipelineOrchestratorRepository(input.db),
+    ).completeStageTask(
+      {
+        runId: run.id,
+        stageTaskId: stageTask.issueId,
+        terminalStatus: 'done',
+        outcome: passed ? 'passed' : 'failed',
+        score: parsedOutput.data.score,
+        maxScore: 10,
+        summary: parsedOutput.data.summary,
+        trace: {
+          ...heartbeatTrace(input.run),
+          inputSnapshot: parsedInput.data,
+          outputSnapshot: {
+            finalizationStatus: passed ? 'passed' : 'changes_requested',
+            validatedOutput: parsedOutput.data,
+          },
+          decisionSnapshot: {
+            outcome: passed ? 'passed' : 'failed',
+            score: parsedOutput.data.score,
+            maxScore: 10,
+            passingScore: parsedInput.data.passingScore,
+            recommendation: parsedOutput.data.recommendation,
+          },
+        },
+      },
+      (observed) => {
+        transition = observed;
+      },
+    );
+    if (!passed && transition.claimed && transition.nextStageTask) {
+      await attachEvaluatorFeedbackToRetry({
+        db: input.db,
+        stageTask: transition.nextStageTask,
+        output: parsedOutput.data,
+        passingScore: parsedInput.data.passingScore,
+      });
+    }
+    await queueTransitionStage({
+      db: input.db,
+      heartbeat: input.heartbeat,
+      run: completed,
+      transition,
+    });
+    return {
+      handled: true as const,
+      status: passed ? ('completed' as const) : ('changes_requested' as const),
+      run: completed,
+      transition,
+    };
   }
 
   const parsedInput = mergeReadinessDroneInputSchema.safeParse(frozenInput);

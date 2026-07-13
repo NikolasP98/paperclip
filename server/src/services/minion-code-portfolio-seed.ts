@@ -536,12 +536,12 @@ function buildAgentDefinitions(
       title: 'Independent Implementation Evaluator',
       capabilities:
         'Evaluates approved-spec compliance and regression evidence with a versioned rubric; never edits or pushes code.',
-      adapterType: 'codex_local',
-      adapterConfig: {
-        model: 'gpt-5.4',
-        modelReasoningEffort: 'high',
-        dangerouslyBypassApprovalsAndSandbox: false,
-      },
+      adapterType: 'minion_drone',
+      adapterConfig: droneConfig(
+        'portfolio-implementation-evaluator-v1',
+        gatewayUrl,
+        input.minionGatewayTokenSecretId,
+      ),
       status: 'idle',
       metadata: baseMetadata('evaluator'),
     },
