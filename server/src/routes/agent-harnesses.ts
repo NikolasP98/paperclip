@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import {
   agentHarnessIdsQuerySchema,
-  createHarnessGuidanceProposalSchema,
+  createHarnessProposalSchema,
   emptyHarnessGuidanceDecisionSchema,
   rejectHarnessGuidanceProposalSchema,
   rollbackHarnessGuidanceProposalSchema,
@@ -76,7 +76,7 @@ export function agentHarnessRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const parsed = createHarnessGuidanceProposalSchema.safeParse(req.body);
+    const parsed = createHarnessProposalSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(422).json({ error: parsed.error.issues[0]?.message ?? "Invalid proposal" });
       return;
@@ -85,14 +85,14 @@ export function agentHarnessRoutes(db: Db) {
     if (req.actor.type === "agent") {
       const actorAgentId = req.actor.agentId;
       if (!actorAgentId) {
-        res.status(403).json({ error: "Agent identity is required to propose harness guidance" });
+        res.status(403).json({ error: "Agent identity is required to propose harness changes" });
         return;
       }
       actor = { type: "agent", agentId: actorAgentId };
     } else {
       actor = { type: "user", userId: req.actor.userId ?? "local-board" };
     }
-    const proposal = await service.createGuidanceProposal({
+    const proposal = await service.createProposal({
       companyId,
       agentId,
       signalId: parsed.data.signalId,
@@ -117,7 +117,7 @@ export function agentHarnessRoutes(db: Db) {
       return;
     }
     res.json(
-      await service.approveGuidanceProposal({
+      await service.approveProposal({
         companyId,
         agentId,
         proposalId: req.params.proposalId as string,
@@ -140,7 +140,7 @@ export function agentHarnessRoutes(db: Db) {
       return;
     }
     res.json(
-      await service.rejectGuidanceProposal({
+      await service.rejectProposal({
         companyId,
         agentId,
         proposalId: req.params.proposalId as string,
@@ -164,7 +164,7 @@ export function agentHarnessRoutes(db: Db) {
       return;
     }
     res.json(
-      await service.promoteGuidanceProposal({
+      await service.promoteProposal({
         companyId,
         agentId,
         proposalId: req.params.proposalId as string,
@@ -187,7 +187,7 @@ export function agentHarnessRoutes(db: Db) {
       return;
     }
     res.json(
-      await service.rollbackGuidanceProposal({
+      await service.rollbackProposal({
         companyId,
         agentId,
         proposalId: req.params.proposalId as string,

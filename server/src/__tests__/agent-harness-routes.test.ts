@@ -125,9 +125,7 @@ describeDb("agent harness governance routes", () => {
       isInstanceAdmin: true,
     };
 
-    const missingIdentity = await request(
-      app({ type: "agent", companyId, source: "agent_key" }),
-    )
+    const missingIdentity = await request(app({ type: "agent", companyId, source: "agent_key" }))
       .post(`/api/agents/${workerId}/harness/proposals`)
       .send(payload);
     expect(missingIdentity.status).toBe(403);
@@ -168,5 +166,60 @@ describeDb("agent harness governance routes", () => {
       .send({ reason: "Restore the prior guidance after the trial." });
     expect(rolledBack.status, JSON.stringify(rolledBack.body)).toBe(200);
     expect(rolledBack.body.status).toBe("rolled_back");
+
+    const capabilityBase = (await agentHarnessService(db).ensureRevision(workerId, companyId))!;
+    const capabilityContext = (await agentHarnessService(db).compactContext(workerId, companyId))!;
+    const capabilitySignal = await db
+      .insert(agentLearningSignals)
+      .values({
+        companyId,
+        agentId: workerId,
+        harnessRevisionId: capabilityBase.id,
+        signalType: "human_feedback",
+        outcome: "changes_requested",
+        body: "Narrow the active execution policy for the next trial.",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const capabilityPayload = {
+      signalId: capabilitySignal.id,
+      rationale: "The attributed feedback requests a read-only active capability trial.",
+      change: {
+        kind: "replace_active_capabilities",
+        baseRevisionId: capabilityBase.id,
+        before: {
+          tools: capabilityContext.activeTools,
+          skills: capabilityContext.activeSkills,
+        },
+        after: { tools: ["read"], skills: [] },
+      },
+    };
+    const expanded = await request(app(boardActor))
+      .post(`/api/agents/${workerId}/harness/proposals`)
+      .send({
+        ...capabilityPayload,
+        change: {
+          ...capabilityPayload.change,
+          after: { tools: ["read", "root-shell"], skills: [] },
+        },
+      });
+    expect(expanded.status).toBe(422);
+    const capabilityCreated = await request(app(boardActor))
+      .post(`/api/agents/${workerId}/harness/proposals`)
+      .send(capabilityPayload);
+    expect(capabilityCreated.status, JSON.stringify(capabilityCreated.body)).toBe(201);
+    expect(capabilityCreated.body.proposalType).toBe("active_capabilities");
+    const capabilityApproved = await request(app(boardActor))
+      .post(`/api/agents/${workerId}/harness/proposals/${capabilityCreated.body.id}/approve`)
+      .send({});
+    expect(capabilityApproved.status, JSON.stringify(capabilityApproved.body)).toBe(200);
+    const capabilityPromoted = await request(app(boardActor))
+      .post(`/api/agents/${workerId}/harness/proposals/${capabilityCreated.body.id}/promote`)
+      .send({});
+    expect(capabilityPromoted.status, JSON.stringify(capabilityPromoted.body)).toBe(200);
+    expect(await agentHarnessService(db).compactContext(workerId, companyId)).toMatchObject({
+      activeTools: ["read"],
+      activeSkills: [],
+    });
   });
 });

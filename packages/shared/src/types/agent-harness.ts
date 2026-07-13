@@ -21,6 +21,17 @@ export interface HarnessGuidanceChange {
   before: string;
   after: string;
 }
+export interface AgentHarnessCapabilitySelection {
+  tools: string[];
+  skills: string[];
+}
+export interface HarnessCapabilitySelectionChange {
+  kind: "replace_active_capabilities";
+  baseRevisionId: string;
+  before: AgentHarnessCapabilitySelection;
+  after: AgentHarnessCapabilitySelection;
+}
+export type AgentHarnessProposalChange = HarnessGuidanceChange | HarnessCapabilitySelectionChange;
 export interface AgentHarnessRuntimeSelection {
   runtimeKind: string;
   adapterType: string | null;
@@ -37,8 +48,11 @@ export interface AgentHarnessRuntimePolicy {
     fallbacks: AgentHarnessRuntimeSelection[];
     canaries: AgentHarnessRuntimeSelection[];
   };
+  /** Immutable operator-approved catalog for this revision. */
   tools: string[];
   skills: string[];
+  /** Active policy selection; adapters remain the hard execution boundary. */
+  activeCapabilities: AgentHarnessCapabilitySelection;
   objectives: {
     scoreFloor: number;
     maxLatencyMs: number;
@@ -93,13 +107,13 @@ export interface AgentLearningProposal {
   harnessRevisionId: string | null;
   signalId: string;
   status: AgentHarnessProposalStatus;
-  proposalType: "role_guidance" | "review_needed";
+  proposalType: "role_guidance" | "active_capabilities" | "review_needed";
   rationale: string;
   riskLevel: string;
   confidence: number;
   evidence: Record<string, unknown>;
   validationPlan: Record<string, unknown>;
-  proposedChanges: HarnessGuidanceChange | Record<string, never>;
+  proposedChanges: AgentHarnessProposalChange | Record<string, never>;
   reviewedByAgentId: string | null;
   reviewedByUserId: string | null;
   reviewedAt: Date | string | null;

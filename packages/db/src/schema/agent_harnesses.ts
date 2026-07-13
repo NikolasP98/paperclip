@@ -14,7 +14,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issueExecutionDecisions } from "./issue_execution_decisions.js";
 import { issues } from "./issues.js";
-import type { HarnessGuidanceChange } from "@paperclipai/shared";
+import type { AgentHarnessProposalChange } from "@paperclipai/shared";
 
 export const agentHarnessRevisions = pgTable(
   "agent_harness_revisions",
@@ -118,7 +118,7 @@ export const agentLearningProposals = pgTable(
     evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
     validationPlan: jsonb("validation_plan").$type<Record<string, unknown>>().notNull().default({}),
     proposedChanges: jsonb("proposed_changes")
-      .$type<HarnessGuidanceChange | Record<string, never>>()
+      .$type<AgentHarnessProposalChange | Record<string, never>>()
       .notNull()
       .default({}),
     reviewedByAgentId: uuid("reviewed_by_agent_id").references(() => agents.id, {

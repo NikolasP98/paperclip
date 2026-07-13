@@ -265,6 +265,195 @@ describeDb("agent harness persistence", () => {
     ]);
   });
 
+  it("governs active capabilities within the immutable catalog and narrows on catalog shrink", async () => {
+    const companyId = randomUUID();
+    const workerId = randomUUID();
+    const reviewerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Harness Capability Co",
+      issuePrefix: "HCP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: workerId,
+        companyId,
+        name: "bug-fixer-capabilities",
+        role: "engineer",
+        adapterType: "opencode_local",
+        adapterConfig: {
+          model: "github-copilot/claude-sonnet-5",
+          allowedTools: ["custom-deployer"],
+          skills: ["custom-skill"],
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerId,
+        companyId,
+        name: "learning-reviewer-capabilities",
+        role: "researcher",
+        adapterType: "hermes_local",
+        adapterConfig: { model: "review-model" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const service = agentHarnessService(db);
+    const base = (await service.ensureRevision(workerId, companyId))!;
+    const baseContext = (await service.compactContext(workerId, companyId))!;
+    const signal = await db
+      .insert(agentLearningSignals)
+      .values({
+        companyId,
+        agentId: workerId,
+        harnessRevisionId: base.id,
+        signalType: "human_feedback",
+        outcome: "changes_requested",
+        body: "Use only the read path and the approved custom deployment capability.",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const proposalInput = {
+      companyId,
+      agentId: workerId,
+      signalId: signal.id,
+      rationale: "The attributed feedback asks for a narrower active execution policy.",
+      change: {
+        kind: "replace_active_capabilities" as const,
+        baseRevisionId: base.id,
+        before: {
+          tools: baseContext.activeTools,
+          skills: baseContext.activeSkills,
+        },
+        after: {
+          tools: ["read", "custom-deployer"],
+          skills: ["custom-skill"],
+        },
+      },
+    };
+
+    await expect(
+      service.createCapabilityProposal({
+        ...proposalInput,
+        change: {
+          ...proposalInput.change,
+          after: { tools: ["read", "root-shell"], skills: ["custom-skill"] },
+        },
+        actor: { type: "agent", agentId: reviewerId },
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(
+      service.createCapabilityProposal({
+        ...proposalInput,
+        actor: { type: "agent", agentId: workerId },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    const proposal = await service.createCapabilityProposal({
+      ...proposalInput,
+      actor: { type: "agent", agentId: reviewerId },
+    });
+    const replay = await service.createCapabilityProposal({
+      ...proposalInput,
+      actor: { type: "agent", agentId: reviewerId },
+    });
+    expect(replay.id).toBe(proposal.id);
+    expect(proposal).toMatchObject({
+      status: "proposed",
+      proposalType: "active_capabilities",
+      validationPlan: {
+        immutableOperatorCatalog: true,
+        adapterRemainsOuterBound: true,
+      },
+    });
+    await service.approveProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+    });
+    await service.promoteProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+    });
+    expect(await service.compactContext(workerId, companyId)).toMatchObject({
+      activeTools: ["custom-deployer", "read"],
+      activeSkills: ["custom-skill"],
+    });
+
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          model: "github-copilot/claude-sonnet-5.1",
+          allowedTools: ["custom-deployer"],
+          skills: ["custom-skill"],
+        },
+      })
+      .where(eq(agents.id, workerId));
+    const preserved = await service.ensureRevision(workerId, companyId);
+    expect(preserved?.source).toBe("observed_config_change");
+    expect(await service.compactContext(workerId, companyId)).toMatchObject({
+      activeTools: ["custom-deployer", "read"],
+      activeSkills: ["custom-skill"],
+    });
+
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          model: "github-copilot/claude-sonnet-5.2",
+          allowedTools: [],
+          skills: [],
+        },
+      })
+      .where(eq(agents.id, workerId));
+    const narrowed = await service.ensureRevision(workerId, companyId);
+    expect(narrowed?.source).toBe("observed_config_change");
+    expect(await service.compactContext(workerId, companyId)).toMatchObject({
+      activeTools: ["read"],
+      activeSkills: [],
+    });
+
+    const rolledBack = await service.rollbackProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+      reason: "Restore the prior selection without restoring removed catalog entries.",
+    });
+    expect(rolledBack.status).toBe("rolled_back");
+    const rollbackReplay = await service.rollbackProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+    });
+    expect(rollbackReplay.id).toBe(proposal.id);
+    expect(await service.compactContext(workerId, companyId)).toMatchObject({
+      activeTools: ["edit", "git", "github", "read", "shell"],
+      activeSkills: [
+        "systematic-debugging",
+        "test-driven-development",
+        "verification-before-completion",
+      ],
+    });
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, proposal.id));
+    expect(activities.map((activity) => activity.action).sort()).toEqual([
+      "agent_harness.capabilities_approved",
+      "agent_harness.capabilities_promoted",
+      "agent_harness.capabilities_proposed",
+      "agent_harness.capabilities_rolled_back",
+    ]);
+  });
+
   it("supersedes an approved proposal when its locked base is stale", async () => {
     const companyId = randomUUID();
     const workerId = randomUUID();
@@ -337,6 +526,91 @@ describeDb("agent harness persistence", () => {
     expect((await service.compactContext(workerId, companyId))?.guidance).toBe(
       String(base.snapshot.guidance),
     );
+  });
+
+  it("supersedes an approved capability proposal when its locked base is stale", async () => {
+    const companyId = randomUUID();
+    const workerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Harness Capability Stale Base Co",
+      issuePrefix: "HCS",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: workerId,
+      companyId,
+      name: "bug-fixer-capability-stale",
+      role: "engineer",
+      adapterType: "opencode_local",
+      adapterConfig: { model: "github-copilot/claude-sonnet-5" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const service = agentHarnessService(db);
+    const base = (await service.ensureRevision(workerId, companyId))!;
+    const context = (await service.compactContext(workerId, companyId))!;
+    const signal = await db
+      .insert(agentLearningSignals)
+      .values({
+        companyId,
+        agentId: workerId,
+        harnessRevisionId: base.id,
+        signalType: "human_feedback",
+        outcome: "changes_requested",
+        body: "Narrow the active capability selection.",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const proposal = await service.createCapabilityProposal({
+      companyId,
+      agentId: workerId,
+      signalId: signal.id,
+      rationale: "The attributed signal requests a narrower active execution policy.",
+      change: {
+        kind: "replace_active_capabilities",
+        baseRevisionId: base.id,
+        before: { tools: context.activeTools, skills: context.activeSkills },
+        after: { tools: ["read"], skills: [] },
+      },
+      actor: { type: "user", userId: "board-user" },
+    });
+    await service.approveProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+    });
+    await db
+      .update(agents)
+      .set({ capabilities: "Operator changed the role capability catalog context." })
+      .where(eq(agents.id, workerId));
+    const newer = await service.ensureRevision(workerId, companyId);
+    expect(newer?.id).not.toBe(base.id);
+
+    const superseded = await service.promoteProposal({
+      companyId,
+      agentId: workerId,
+      proposalId: proposal.id,
+      userId: "board-user",
+    });
+    expect(superseded).toMatchObject({
+      status: "superseded",
+      resolution: { reason: "stale_base_revision", currentRevisionId: newer?.id },
+    });
+    expect(await service.compactContext(workerId, companyId)).toMatchObject({
+      activeTools: context.activeTools,
+      activeSkills: context.activeSkills,
+    });
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, proposal.id));
+    expect(activities.map((activity) => activity.action).sort()).toEqual([
+      "agent_harness.capabilities_approved",
+      "agent_harness.capabilities_proposed",
+      "agent_harness.capabilities_superseded",
+    ]);
   });
 
   it("ingests explicitly attributed pipeline signals idempotently by bounded source key", async () => {

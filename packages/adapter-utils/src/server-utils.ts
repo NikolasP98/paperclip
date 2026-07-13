@@ -683,11 +683,30 @@ export function renderPaperclipHarnessPrompt(value: unknown): string {
   const guidance = asString(harness.guidance, "").trim().slice(0, 6_000);
   if (!revisionId || !guidance) return "";
   const roleKey = asString(harness.roleKey, "generic").trim() || "generic";
+  const activeCapabilityList = (input: unknown) =>
+    [...new Set(asStringArray(input).map((item) => item.trim()))]
+      .filter(
+        (item) =>
+          item.length > 0 && item.length <= 128 && !/[\u0000-\u001f\u007f]/.test(item),
+      )
+      .sort((left, right) => left.localeCompare(right))
+      .slice(0, 64);
+  const formatCapabilities = (items: string[]) => {
+    if (items.length === 0) return "none";
+    const rendered = items.join(", ");
+    return rendered.length <= 1_000 ? rendered : `${rendered.slice(0, 997)}...`;
+  };
+  const activeTools = activeCapabilityList(harness.activeTools);
+  const activeSkills = activeCapabilityList(harness.activeSkills);
   return [
     "## Paperclip Living Harness",
     "",
     `- revision: ${revisionId}`,
     `- role: ${roleKey}`,
+    "",
+    "Use only the active policy items below. This selection grants nothing: your adapter, credentials, and permissions remain hard outer bounds.",
+    `- active tools: ${formatCapabilities(activeTools)}`,
+    `- active skills: ${formatCapabilities(activeSkills)}`,
     "",
     guidance,
   ].join("\n");

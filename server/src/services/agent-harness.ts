@@ -11,13 +11,19 @@ import {
   type Db,
 } from "@paperclipai/db";
 import {
+  createHarnessCapabilityProposalSchema,
   createHarnessGuidanceProposalSchema,
-  harnessGuidanceChangeSchema,
+  createHarnessProposalSchema,
+  harnessCapabilitySelectionSchema,
+  harnessProposalChangeSchema,
+  type AgentHarnessCapabilitySelection,
   type AgentHarnessLearningPolicy,
   type AgentHarnessProposalStatus,
+  type AgentHarnessProposalChange,
   type AgentHarnessRoleKey,
   type AgentHarnessRuntimePolicy,
   type AgentHarnessSummary,
+  type HarnessCapabilitySelectionChange,
   type HarnessGuidanceChange,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -34,6 +40,49 @@ function sorted(value: unknown): unknown {
 }
 function sameHarnessValue(left: unknown, right: unknown) {
   return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
+}
+function canonicalCapabilityList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(
+          (item) => item.length > 0 && item.length <= 128 && !/[\u0000-\u001f\u007f]/.test(item),
+        ),
+    ),
+  ]
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 64);
+}
+function capabilityCatalog(runtime: AgentHarnessRuntimePolicy): AgentHarnessCapabilitySelection {
+  return {
+    tools: canonicalCapabilityList(runtime.tools),
+    skills: canonicalCapabilityList(runtime.skills),
+  };
+}
+function narrowCapabilitySelection(
+  selection: AgentHarnessCapabilitySelection,
+  catalog: AgentHarnessCapabilitySelection,
+): AgentHarnessCapabilitySelection {
+  const tools = new Set(catalog.tools);
+  const skills = new Set(catalog.skills);
+  return {
+    tools: canonicalCapabilityList(selection.tools).filter((item) => tools.has(item)),
+    skills: canonicalCapabilityList(selection.skills).filter((item) => skills.has(item)),
+  };
+}
+function activeCapabilities(runtime: AgentHarnessRuntimePolicy): AgentHarnessCapabilitySelection {
+  const catalog = capabilityCatalog(runtime);
+  const parsed = harnessCapabilitySelectionSchema.safeParse(runtime.activeCapabilities);
+  return parsed.success ? narrowCapabilitySelection(parsed.data, catalog) : catalog;
+}
+function revisionRuntime(revision: typeof agentHarnessRevisions.$inferSelect) {
+  return revision.snapshot.runtime as AgentHarnessRuntimePolicy;
+}
+function revisionActiveCapabilities(revision: typeof agentHarnessRevisions.$inferSelect) {
+  return activeCapabilities(revisionRuntime(revision));
 }
 export function harnessContentHash(snapshot: Record<string, unknown>) {
   return createHash("sha256")
@@ -137,10 +186,10 @@ export function observedHarnessConfig(agent: {
     maxTurnsPerRun: typeof config.maxTurnsPerRun === "number" ? config.maxTurnsPerRun : null,
     fallbackChain,
     allowedTools: Array.isArray(config.allowedTools)
-      ? config.allowedTools.filter((v): v is string => typeof v === "string")
+      ? canonicalCapabilityList(config.allowedTools)
       : [],
     skills: Array.isArray(config.skills)
-      ? config.skills.filter((v): v is string => typeof v === "string")
+      ? canonicalCapabilityList(config.skills)
       : [],
     envKeys: env,
     instructionPathHash: instructionPath,
@@ -251,14 +300,14 @@ export function harnessPolicyPreset(agent: {
   const recommended =
     roleKey === "issue-classifier"
       ? {
-          primary: droneSelection("claude-haiku-4-6", "anthropic"),
-          fallbacks: [selection("claude_local", "claude-haiku-4-6", "anthropic")],
+          primary: droneSelection("claude-haiku-4-5", "anthropic"),
+          fallbacks: [selection("claude_local", "claude-haiku-4-5", "anthropic")],
           canaries: [droneSelection("google/gemini-2.5-flash", "openrouter")],
         }
       : roleKey === "spec-planner"
         ? {
-            primary: droneSelection("claude-opus-4-8", "anthropic"),
-            fallbacks: [selection("claude_local", "claude-opus-4-8", "anthropic")],
+            primary: droneSelection("claude-opus-4-7", "anthropic"),
+            fallbacks: [selection("claude_local", "claude-opus-4-7", "anthropic")],
             canaries: [
               selection("opencode_local", "github-copilot/claude-fable-5", "github-copilot"),
             ],
@@ -279,13 +328,13 @@ export function harnessPolicyPreset(agent: {
       : roleKey === "evaluator"
         ? {
             primary: selection("codex_local", "gpt-5.4", "openai"),
-            fallbacks: [selection("claude_local", "claude-opus-4-8", "anthropic")],
+            fallbacks: [selection("claude_local", "claude-opus-4-7", "anthropic")],
             canaries: [droneSelection("gpt-5.4", "openai")],
           }
         : roleKey === "code-merger"
           ? {
-              primary: droneSelection("claude-haiku-4-6", "anthropic"),
-              fallbacks: [selection("claude_local", "claude-haiku-4-6", "anthropic")],
+              primary: droneSelection("claude-haiku-4-5", "anthropic"),
+              fallbacks: [selection("claude_local", "claude-haiku-4-5", "anthropic")],
               canaries: [],
             }
           : roleKey === "portfolio-monitor"
@@ -323,8 +372,12 @@ export function harnessPolicyPreset(agent: {
         fallbacks: fallbacks.map((item) => entry(item, agent.adapterType)),
       },
       recommended,
-      tools: [...new Set([...preset[1], ...tools])],
-      skills: [...new Set([...preset[2], ...skills])],
+      tools: canonicalCapabilityList([...preset[1], ...tools]),
+      skills: canonicalCapabilityList([...preset[2], ...skills]),
+      activeCapabilities: {
+        tools: canonicalCapabilityList([...preset[1], ...tools]),
+        skills: canonicalCapabilityList([...preset[2], ...skills]),
+      },
       objectives: {
         scoreFloor: preset[3],
         maxLatencyMs: preset[4],
@@ -401,8 +454,17 @@ export function agentHarnessService(db: Db) {
             .then((rows) => rows[0] ?? null)
         : null;
       const policy = harnessPolicyPreset(agent);
+      const catalog = capabilityCatalog(policy.runtime);
+      const selected = current ? revisionActiveCapabilities(current) : catalog;
+      const runtime: AgentHarnessRuntimePolicy = {
+        ...policy.runtime,
+        tools: catalog.tools,
+        skills: catalog.skills,
+        activeCapabilities: narrowCapabilitySelection(selected, catalog),
+      };
       const snapshot = sorted({
         ...policy,
+        runtime,
         guidance: current ? revisionGuidance(current) : guidanceForRole(policy.roleKey),
         observed: observedHarnessConfig(agent),
         capabilities: agent.capabilities,
@@ -445,6 +507,7 @@ export function agentHarnessService(db: Db) {
     if (!revision) return null;
     const learning = revision.snapshot.learning as AgentHarnessLearningPolicy;
     const roleKey = revision.snapshot.roleKey as AgentHarnessRoleKey;
+    const selected = revisionActiveCapabilities(revision);
     const rows = await db
       .select()
       .from(agentLearningSignals)
@@ -476,6 +539,8 @@ export function agentHarnessService(db: Db) {
       contentHash: revision.contentHash,
       roleKey,
       guidance: revisionGuidance(revision),
+      activeTools: selected.tools,
+      activeSkills: selected.skills,
       learning,
       performance: revision.performanceSnapshot,
       recentFeedback,
@@ -483,16 +548,12 @@ export function agentHarnessService(db: Db) {
   }
   async function currentSummaries(companyId: string, agentIds: string[]) {
     const rows = await db
-      .select({ agent: agents, revision: agentHarnessRevisions })
+      .select({ agent: agents })
       .from(agents)
-      .leftJoin(
-        agentHarnessRevisions,
-        eq(agents.currentHarnessRevisionId, agentHarnessRevisions.id),
-      )
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)));
     const result: AgentHarnessSummary[] = [];
     for (const row of rows) {
-      const revision = row.revision ?? (await ensureRevision(row.agent.id, companyId));
+      const revision = await ensureRevision(row.agent.id, companyId);
       if (revision) result.push(summary(revision));
     }
     return result;
@@ -517,7 +578,7 @@ export function agentHarnessService(db: Db) {
       !reviewer ||
       (reviewer.adapterType !== "hermes_local" && roleKeyForAgent(reviewer) !== "learning-reviewer")
     ) {
-      throw forbidden("Only a board user or learning-reviewer/Hermes agent may propose guidance");
+      throw forbidden("Only a board user or learning-reviewer/Hermes agent may propose harness changes");
     }
   }
 
@@ -545,15 +606,15 @@ export function agentHarnessService(db: Db) {
     });
   }
 
-  async function createGuidanceProposal(input: {
+  async function createGovernedProposal(input: {
     companyId: string;
     agentId: string;
     signalId: string;
     rationale: string;
-    change: HarnessGuidanceChange;
+    change: AgentHarnessProposalChange;
     actor: HarnessProposalActor;
   }) {
-    const parsedInput = createHarnessGuidanceProposalSchema.parse({
+    const parsedInput = createHarnessProposalSchema.parse({
       signalId: input.signalId,
       rationale: input.rationale,
       change: input.change,
@@ -601,8 +662,21 @@ export function agentHarnessService(db: Db) {
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!base) throw unprocessable("Base harness revision does not belong to the target agent");
-      if (revisionGuidance(base) !== change.before) {
-        throw conflict("Proposal before-guidance does not match the base revision");
+      if (change.kind === "replace_role_guidance") {
+        if (revisionGuidance(base) !== change.before) {
+          throw conflict("Proposal before-guidance does not match the base revision");
+        }
+      } else {
+        const before = revisionActiveCapabilities(base);
+        if (!sameHarnessValue(before, change.before)) {
+          throw conflict("Proposal before-capabilities do not match the base revision");
+        }
+        const catalog = capabilityCatalog(revisionRuntime(base));
+        if (!sameHarnessValue(narrowCapabilitySelection(change.after, catalog), change.after)) {
+          throw unprocessable(
+            "Active capabilities must be a subset of the base revision operator catalog",
+          );
+        }
       }
 
       const existing = await tx
@@ -615,7 +689,7 @@ export function agentHarnessService(db: Db) {
         if (
           existing.status === "proposed" &&
           existing.rationale === parsedInput.rationale &&
-          harnessGuidanceChangeSchema.safeParse(existing.proposedChanges).success &&
+          harnessProposalChangeSchema.safeParse(existing.proposedChanges).success &&
           harnessContentHash(existing.proposedChanges as unknown as Record<string, unknown>) ===
             harnessContentHash(change as unknown as Record<string, unknown>)
         ) {
@@ -626,13 +700,15 @@ export function agentHarnessService(db: Db) {
 
       const actorType = input.actor.type;
       const actorId = input.actor.type === "user" ? input.actor.userId : input.actor.agentId;
+      const capabilityChange = change.kind === "replace_active_capabilities";
+      const proposalType = capabilityChange ? "active_capabilities" : "role_guidance";
       const values = {
         companyId: input.companyId,
         agentId: input.agentId,
         harnessRevisionId: base.id,
         signalId: signal.id,
         status: "proposed",
-        proposalType: "role_guidance",
+        proposalType,
         rationale: parsedInput.rationale,
         riskLevel: "medium",
         confidence: 50,
@@ -643,11 +719,19 @@ export function agentHarnessService(db: Db) {
           score: signal.score,
           maxScore: signal.maxScore,
         },
-        validationPlan: {
-          guidanceOnly: true,
-          requiresHumanApproval: true,
-          automaticPromotion: false,
-        },
+        validationPlan: capabilityChange
+          ? {
+              activeCapabilitySelectionOnly: true,
+              immutableOperatorCatalog: true,
+              adapterRemainsOuterBound: true,
+              requiresHumanApproval: true,
+              automaticPromotion: false,
+            }
+          : {
+              guidanceOnly: true,
+              requiresHumanApproval: true,
+              automaticPromotion: false,
+            },
         proposedChanges: change,
         reviewedByAgentId: null,
         reviewedByUserId: null,
@@ -675,13 +759,47 @@ export function agentHarnessService(db: Db) {
         companyId: input.companyId,
         actorType,
         actorId,
-        action: "agent_harness.guidance_proposed",
+        action: capabilityChange
+          ? "agent_harness.capabilities_proposed"
+          : "agent_harness.guidance_proposed",
         proposalId: proposal.id,
         agentId: input.agentId,
         details: { signalId: signal.id, baseRevisionId: base.id },
       });
       return proposal;
     });
+  }
+
+  async function createGuidanceProposal(input: {
+    companyId: string;
+    agentId: string;
+    signalId: string;
+    rationale: string;
+    change: HarnessGuidanceChange;
+    actor: HarnessProposalActor;
+  }) {
+    const parsed = createHarnessGuidanceProposalSchema.parse({
+      signalId: input.signalId,
+      rationale: input.rationale,
+      change: input.change,
+    });
+    return createGovernedProposal({ ...input, ...parsed });
+  }
+
+  async function createCapabilityProposal(input: {
+    companyId: string;
+    agentId: string;
+    signalId: string;
+    rationale: string;
+    change: HarnessCapabilitySelectionChange;
+    actor: HarnessProposalActor;
+  }) {
+    const parsed = createHarnessCapabilityProposalSchema.parse({
+      signalId: input.signalId,
+      rationale: input.rationale,
+      change: input.change,
+    });
+    return createGovernedProposal({ ...input, ...parsed });
   }
 
   async function lockProposal(
@@ -724,12 +842,16 @@ export function agentHarnessService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!target) throw notFound("Agent not found");
       const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
+      if (!["role_guidance", "active_capabilities"].includes(proposal.proposalType)) {
+        throw conflict("Only governed harness changes can be reviewed");
+      }
+      const capabilityProposal = proposal.proposalType === "active_capabilities";
       const desiredStatus: AgentHarnessProposalStatus =
         input.decision === "approve" ? "approved" : "rejected";
       if (proposal.status === desiredStatus) return proposal;
       if (proposal.status !== "proposed") {
         throw conflict(
-          `Only proposed guidance can be ${input.decision === "approve" ? "approved" : "rejected"}`,
+          `Only proposed harness changes can be ${input.decision === "approve" ? "approved" : "rejected"}`,
         );
       }
       if (proposal.harnessRevisionId) {
@@ -761,7 +883,7 @@ export function agentHarnessService(db: Db) {
         companyId: input.companyId,
         actorType: "user",
         actorId: input.userId,
-        action: `agent_harness.guidance_${input.decision === "approve" ? "approved" : "rejected"}`,
+        action: `agent_harness.${capabilityProposal ? "capabilities" : "guidance"}_${input.decision === "approve" ? "approved" : "rejected"}`,
         proposalId: proposal.id,
         agentId: input.agentId,
         details: { baseRevisionId: proposal.harnessRevisionId, reason: input.reason },
@@ -787,12 +909,20 @@ export function agentHarnessService(db: Db) {
       if (!target) throw notFound("Agent not found");
       const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
       if (proposal.status === "promoted") return proposal;
-      if (proposal.status !== "approved") throw conflict("Only approved guidance can be promoted");
-      const parsed = harnessGuidanceChangeSchema.safeParse(proposal.proposedChanges);
+      if (proposal.status !== "approved")
+        throw conflict("Only approved harness changes can be promoted");
+      const parsed = harnessProposalChangeSchema.safeParse(proposal.proposedChanges);
       if (!parsed.success || proposal.harnessRevisionId !== parsed.data.baseRevisionId) {
-        throw conflict("Proposal does not contain a valid guidance-only change");
+        throw conflict("Proposal does not contain a valid governed harness change");
       }
       const change = parsed.data;
+      const capabilityChange = change.kind === "replace_active_capabilities";
+      if (
+        proposal.proposalType !==
+        (capabilityChange ? "active_capabilities" : "role_guidance")
+      ) {
+        throw conflict("Proposal type does not match its governed change");
+      }
       const base = await tx
         .select()
         .from(agentHarnessRevisions)
@@ -826,20 +956,38 @@ export function agentHarnessService(db: Db) {
           companyId: input.companyId,
           actorType: "user",
           actorId: input.userId,
-          action: "agent_harness.guidance_superseded",
+          action: capabilityChange
+            ? "agent_harness.capabilities_superseded"
+            : "agent_harness.guidance_superseded",
           proposalId: proposal.id,
           agentId: input.agentId,
           details: { baseRevisionId: base.id, currentRevisionId: target.currentHarnessRevisionId },
         });
         return superseded;
       }
-      if (revisionGuidance(base) !== change.before) {
-        throw conflict("Proposal before-guidance no longer matches its base revision");
+      let snapshot: Record<string, unknown>;
+      if (change.kind === "replace_role_guidance") {
+        if (revisionGuidance(base) !== change.before) {
+          throw conflict("Proposal before-guidance no longer matches its base revision");
+        }
+        snapshot = sorted({ ...base.snapshot, guidance: change.after }) as Record<
+          string,
+          unknown
+        >;
+      } else {
+        const runtime = revisionRuntime(base);
+        const catalog = capabilityCatalog(runtime);
+        if (!sameHarnessValue(revisionActiveCapabilities(base), change.before)) {
+          throw conflict("Proposal before-capabilities no longer match its base revision");
+        }
+        if (!sameHarnessValue(narrowCapabilitySelection(change.after, catalog), change.after)) {
+          throw conflict("Proposal capabilities exceed the immutable base revision catalog");
+        }
+        snapshot = sorted({
+          ...base.snapshot,
+          runtime: { ...runtime, activeCapabilities: change.after },
+        }) as Record<string, unknown>;
       }
-      const snapshot = sorted({ ...base.snapshot, guidance: change.after }) as Record<
-        string,
-        unknown
-      >;
       const counter = await tx
         .select({ value: max(agentHarnessRevisions.revisionNumber) })
         .from(agentHarnessRevisions)
@@ -854,7 +1002,7 @@ export function agentHarnessService(db: Db) {
           contentHash: harnessContentHash(snapshot),
           snapshot,
           performanceSnapshot: base.performanceSnapshot,
-          source: `guidance_proposal:${proposal.id}`,
+          source: `${capabilityChange ? "capability" : "guidance"}_proposal:${proposal.id}`,
         })
         .returning()
         .then((rows) => rows[0]!);
@@ -885,7 +1033,9 @@ export function agentHarnessService(db: Db) {
         companyId: input.companyId,
         actorType: "user",
         actorId: input.userId,
-        action: "agent_harness.guidance_promoted",
+        action: capabilityChange
+          ? "agent_harness.capabilities_promoted"
+          : "agent_harness.guidance_promoted",
         proposalId: proposal.id,
         agentId: input.agentId,
         details: { baseRevisionId: base.id, promotedRevisionId: revision.id },
@@ -912,9 +1062,19 @@ export function agentHarnessService(db: Db) {
       if (!target) throw notFound("Agent not found");
       const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
       if (proposal.status === "rolled_back") return proposal;
-      if (proposal.status !== "promoted") throw conflict("Only promoted guidance can be rolled back");
-      const parsed = harnessGuidanceChangeSchema.safeParse(proposal.proposedChanges);
-      if (!parsed.success) throw conflict("Proposal does not contain a valid guidance-only change");
+      if (proposal.status !== "promoted")
+        throw conflict("Only promoted harness changes can be rolled back");
+      const parsed = harnessProposalChangeSchema.safeParse(proposal.proposedChanges);
+      if (!parsed.success)
+        throw conflict("Proposal does not contain a valid governed harness change");
+      const change = parsed.data;
+      const capabilityChange = change.kind === "replace_active_capabilities";
+      if (
+        proposal.proposalType !==
+        (capabilityChange ? "active_capabilities" : "role_guidance")
+      ) {
+        throw conflict("Proposal type does not match its governed change");
+      }
       if (!target.currentHarnessRevisionId) throw conflict("Agent has no current harness revision");
       const current = await tx
         .select()
@@ -929,13 +1089,30 @@ export function agentHarnessService(db: Db) {
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!current) throw conflict("Current harness revision no longer exists");
-      if (revisionGuidance(current) !== parsed.data.after) {
-        throw conflict("Current guidance no longer matches the promoted proposal");
+      let snapshot: Record<string, unknown>;
+      if (change.kind === "replace_role_guidance") {
+        if (revisionGuidance(current) !== change.after) {
+          throw conflict("Current guidance no longer matches the promoted proposal");
+        }
+        snapshot = sorted({ ...current.snapshot, guidance: change.before }) as Record<
+          string,
+          unknown
+        >;
+      } else {
+        const runtime = revisionRuntime(current);
+        const catalog = capabilityCatalog(runtime);
+        const expectedCurrent = narrowCapabilitySelection(change.after, catalog);
+        if (!sameHarnessValue(revisionActiveCapabilities(current), expectedCurrent)) {
+          throw conflict("Current capabilities no longer match the promoted proposal");
+        }
+        snapshot = sorted({
+          ...current.snapshot,
+          runtime: {
+            ...runtime,
+            activeCapabilities: narrowCapabilitySelection(change.before, catalog),
+          },
+        }) as Record<string, unknown>;
       }
-      const snapshot = sorted({ ...current.snapshot, guidance: parsed.data.before }) as Record<
-        string,
-        unknown
-      >;
       const counter = await tx
         .select({ value: max(agentHarnessRevisions.revisionNumber) })
         .from(agentHarnessRevisions)
@@ -950,7 +1127,7 @@ export function agentHarnessService(db: Db) {
           contentHash: harnessContentHash(snapshot),
           snapshot,
           performanceSnapshot: current.performanceSnapshot,
-          source: `guidance_rollback:${proposal.id}`,
+          source: `${capabilityChange ? "capability" : "guidance"}_rollback:${proposal.id}`,
         })
         .returning()
         .then((rows) => rows[0]!);
@@ -989,7 +1166,9 @@ export function agentHarnessService(db: Db) {
         companyId: input.companyId,
         actorType: "user",
         actorId: input.userId,
-        action: "agent_harness.guidance_rolled_back",
+        action: capabilityChange
+          ? "agent_harness.capabilities_rolled_back"
+          : "agent_harness.guidance_rolled_back",
         proposalId: proposal.id,
         agentId: input.agentId,
         details: { fromRevisionId: current.id, rollbackRevisionId: revision.id },
@@ -1003,6 +1182,8 @@ export function agentHarnessService(db: Db) {
     compactContext,
     currentSummaries,
     createGuidanceProposal,
+    createCapabilityProposal,
+    createProposal: createGovernedProposal,
     approveGuidanceProposal: (input: {
       companyId: string;
       agentId: string;
@@ -1018,6 +1199,21 @@ export function agentHarnessService(db: Db) {
     }) => reviewProposal({ ...input, decision: "reject" }),
     promoteGuidanceProposal: promoteProposal,
     rollbackGuidanceProposal: rollbackProposal,
+    approveProposal: (input: {
+      companyId: string;
+      agentId: string;
+      proposalId: string;
+      userId: string;
+    }) => reviewProposal({ ...input, decision: "approve" }),
+    rejectProposal: (input: {
+      companyId: string;
+      agentId: string;
+      proposalId: string;
+      userId: string;
+      reason: string;
+    }) => reviewProposal({ ...input, decision: "reject" }),
+    promoteProposal,
+    rollbackProposal,
     async current(agentId: string, companyId: string) {
       const row = await ensureRevision(agentId, companyId);
       return row ? summary(row) : null;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentHarnessIdsQuerySchema,
+  harnessCapabilitySelectionChangeSchema,
   harnessGuidanceChangeSchema,
   roleRoutingPolicySchema,
 } from "./agent-harness.js";
@@ -40,7 +41,8 @@ describe("agent harness validators", () => {
       kind: "replace_role_guidance",
       baseRevisionId: "11111111-1111-4111-8111-111111111111",
       before: "Read the issue evidence and implement only the approved scope.",
-      after: "Read the issue evidence, add a regression test, and implement only the approved scope.",
+      after:
+        "Read the issue evidence, add a regression test, and implement only the approved scope.",
     };
     expect(harnessGuidanceChangeSchema.parse(valid)).toEqual(valid);
     expect(harnessGuidanceChangeSchema.safeParse({ ...valid, model: "gpt-5.4" }).success).toBe(
@@ -55,5 +57,38 @@ describe("agent harness validators", () => {
     expect(harnessGuidanceChangeSchema.safeParse({ ...valid, after: "too short" }).success).toBe(
       false,
     );
+  });
+
+  it("canonicalizes bounded active capability selections and requires a change", () => {
+    const baseRevisionId = "11111111-1111-4111-8111-111111111111";
+    expect(
+      harnessCapabilitySelectionChangeSchema.parse({
+        kind: "replace_active_capabilities",
+        baseRevisionId,
+        before: { tools: ["shell", " read ", "read"], skills: ["testing"] },
+        after: { tools: ["read"], skills: [" testing ", "review"] },
+      }),
+    ).toEqual({
+      kind: "replace_active_capabilities",
+      baseRevisionId,
+      before: { tools: ["read", "shell"], skills: ["testing"] },
+      after: { tools: ["read"], skills: ["review", "testing"] },
+    });
+    expect(
+      harnessCapabilitySelectionChangeSchema.safeParse({
+        kind: "replace_active_capabilities",
+        baseRevisionId,
+        before: { tools: ["read"], skills: [] },
+        after: { tools: ["read", "read"], skills: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessCapabilitySelectionChangeSchema.safeParse({
+        kind: "replace_active_capabilities",
+        baseRevisionId,
+        before: { tools: ["read"], skills: [] },
+        after: { tools: ["read"], skills: [], model: "gpt-5.4" },
+      }).success,
+    ).toBe(false);
   });
 });

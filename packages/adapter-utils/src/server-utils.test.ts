@@ -938,11 +938,16 @@ describe("renderPaperclipHarnessPrompt", () => {
       revisionId: "11111111-1111-4111-8111-111111111111",
       roleKey: "implementer",
       guidance: `Use focused regression tests. ${"x".repeat(7_000)}`,
+      activeTools: ["shell", " read ", "read"],
+      activeSkills: ["verification-before-completion"],
     });
     expect(prompt).toContain("## Paperclip Living Harness");
     expect(prompt).toContain("revision: 11111111-1111-4111-8111-111111111111");
     expect(prompt).toContain("Use focused regression tests.");
-    expect(prompt.length).toBeLessThan(6_200);
+    expect(prompt).toContain("active tools: read, shell");
+    expect(prompt).toContain("active skills: verification-before-completion");
+    expect(prompt).toContain("adapter, credentials, and permissions remain hard outer bounds");
+    expect(prompt.length).toBeLessThan(8_500);
     expect(renderPaperclipHarnessPrompt({ guidance: "missing revision" })).toBe("");
   });
 });

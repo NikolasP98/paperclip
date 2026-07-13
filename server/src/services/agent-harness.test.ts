@@ -47,8 +47,16 @@ describe("agent living harness", () => {
     });
     expect(classifier.runtime.recommended.primary).toMatchObject({
       runtimeKind: "minion_drone",
-      model: "claude-haiku-4-6",
+      model: "claude-haiku-4-5",
       bridgePending: true,
+    });
+    expect(implementer.runtime.activeCapabilities).toEqual({
+      tools: ["edit", "git", "github", "read", "shell"],
+      skills: [
+        "systematic-debugging",
+        "test-driven-development",
+        "verification-before-completion",
+      ],
     });
     expect(roleKeyForAgent({ name: "anything" })).toBe("generic");
   });

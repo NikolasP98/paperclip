@@ -25,11 +25,71 @@ export const harnessGuidanceChangeSchema = z
     path: ["after"],
   });
 
+const harnessCapabilityNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
+    message: "Capability names must not contain control characters",
+  });
+
+const harnessCapabilityListSchema = z
+  .array(harnessCapabilityNameSchema)
+  .max(64)
+  .transform((values) => [...new Set(values)].sort((left, right) => left.localeCompare(right)));
+
+export const harnessCapabilitySelectionSchema = z
+  .object({
+    tools: harnessCapabilityListSchema,
+    skills: harnessCapabilityListSchema,
+  })
+  .strict();
+
+export const harnessCapabilitySelectionChangeSchema = z
+  .object({
+    kind: z.literal("replace_active_capabilities"),
+    baseRevisionId: z.string().uuid(),
+    before: harnessCapabilitySelectionSchema,
+    after: harnessCapabilitySelectionSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      JSON.stringify(value.before.tools) !== JSON.stringify(value.after.tools) ||
+      JSON.stringify(value.before.skills) !== JSON.stringify(value.after.skills),
+    {
+      message: "Active capability selection must change at least one field",
+      path: ["after"],
+    },
+  );
+
+export const harnessProposalChangeSchema = z.union([
+  harnessGuidanceChangeSchema,
+  harnessCapabilitySelectionChangeSchema,
+]);
+
 export const createHarnessGuidanceProposalSchema = z
   .object({
     signalId: z.string().uuid(),
     rationale: z.string().trim().min(10).max(2_000),
     change: harnessGuidanceChangeSchema,
+  })
+  .strict();
+
+export const createHarnessCapabilityProposalSchema = z
+  .object({
+    signalId: z.string().uuid(),
+    rationale: z.string().trim().min(10).max(2_000),
+    change: harnessCapabilitySelectionChangeSchema,
+  })
+  .strict();
+
+export const createHarnessProposalSchema = z
+  .object({
+    signalId: z.string().uuid(),
+    rationale: z.string().trim().min(10).max(2_000),
+    change: harnessProposalChangeSchema,
   })
   .strict();
 
