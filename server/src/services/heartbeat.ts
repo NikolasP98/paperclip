@@ -60,6 +60,10 @@ import {
   finalizeGithubClassifierHeartbeat,
   reconcileGithubClassifierRuns,
 } from "./github-stage-task-intake.js";
+import {
+  finalizePipelineDroneHeartbeat,
+  reconcilePipelineDroneRuns,
+} from "./issue-pipeline-drone-stages.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -7573,6 +7577,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "failed to finalize reaped GitHub classifier heartbeat",
         );
       });
+      await finalizePipelineDroneHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped pipeline Drone heartbeat",
+        );
+      });
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
@@ -9594,6 +9608,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 "failed to finalize GitHub classifier heartbeat",
               );
             });
+            await finalizePipelineDroneHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize pipeline Drone heartbeat",
+              );
+            });
           }
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
@@ -11586,6 +11610,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileGithubClassifierIntake: (companyId?: string) =>
       reconcileGithubClassifierRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
+    reconcilePipelineDroneStages: (companyId?: string) =>
+      reconcilePipelineDroneRuns({
         db,
         heartbeat: { wakeup: enqueueWakeup },
         companyId,

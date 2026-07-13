@@ -72,11 +72,11 @@ export function guidanceForRole(roleKey: AgentHarnessRoleKey) {
     "spec-planner":
       "Produce a bounded implementation spec and explicit child-work proposal from the parent issue, project charter, repository instructions, and prior feedback. Do not edit code or create subtasks directly; exact-once decomposition occurs only after plan approval.",
     implementer:
-      "Fix the root cause with the smallest safe diff. Read prior feedback first, add focused regression coverage, run focused checks, push only the issue branch, and open a draft PR. Never merge or push a default branch.",
+      "Fix the root cause with the smallest safe diff. Read prior feedback first, add focused regression coverage, run focused checks, push only the issue branch, and open a draft PR. Record exactly one primary GitHub pull_request work product on the implementation task with explicit headSha, baseRef, baseSha, and typed checks metadata. Never merge or push a default branch.",
     evaluator:
       "Read-only evaluation: inspect the approved spec, implementation work product, diff, and focused checks. Do not edit or push. Apply the versioned rubric and submit status, findings, and typed evalScore together. A failing score creates a new implementation iteration rather than rewriting history.",
     "code-merger":
-      "Validate merge readiness only after the release approval gate. Return the typed approved head SHA and merge strategy. Do not run git or GitHub mutations; the deterministic merge executor performs the merge.",
+      "Validate only the immutable PR, target, approval, head SHA, and check evidence supplied after the release approval gate. Return typed readiness and blockers only. Do not run git or GitHub mutations; readiness completion never merges or pushes.",
     "portfolio-monitor":
       "Read-only monitoring: deduplicate findings, cite evidence, and propose governed remediation. Do not edit repositories or mutate agent prompts, skills, or runtime configuration.",
     "learning-reviewer":

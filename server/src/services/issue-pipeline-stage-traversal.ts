@@ -10,6 +10,12 @@ import {
   type IssueAssignmentWakeupDeps,
 } from './issue-assignment-wakeup.js';
 import {
+  blockPipelineDroneDispatchFailure,
+  buildReleaseApprovalDecisionSnapshot,
+  materializeApprovedPlan,
+  queuePipelineStageTaskWakeup,
+} from './issue-pipeline-drone-stages.js';
+import {
   issuePipelineOrchestrator,
   type CompleteStageTaskTransition,
   type IssuePipelineOrchestratorRepository,
@@ -276,6 +282,80 @@ export function issuePipelineStageTraversalService(db: Db, deps: IssuePipelineSt
         return { handled: false, claimed: false, run: null, nextStageTask: null };
       }
 
+      const observedRun = await repository.getRun(input.issue.originId);
+      const observedTasks = observedRun ? await repository.listStageTasks(observedRun.id) : [];
+      const observedTask = observedTasks.find((task) => task.issueId === input.issue.id) ?? null;
+      const observedStep =
+        observedRun && observedTask
+          ? observedRun.pipelineSnapshot.steps.find((step) => step.key === observedTask.stageKey)
+          : null;
+      let decisionSnapshot: Record<string, unknown> | null = null;
+
+      if (
+        !deps.repository &&
+        observedRun &&
+        observedTask &&
+        observedStep?.kind === 'approval' &&
+        status === 'done' &&
+        input.pipelineOutcome === 'passed' &&
+        input.requestedByActorType === 'user'
+      ) {
+        try {
+          if (observedTask.stageKey === 'plan-approval') {
+            const materialized = await materializeApprovedPlan({
+              db,
+              run: observedRun,
+              approvalTaskId: observedTask.issueId,
+              actorUserId: input.requestedByActorId,
+            });
+            decisionSnapshot = {
+              outcome: 'approved',
+              actor: input.requestedByActorId ?? null,
+              acceptedPlanRevisionId: materialized.decomposition.acceptedPlanRevisionId,
+              decompositionId: materialized.decomposition.id,
+              childIssueIds: materialized.childIssueIds,
+            };
+          } else if (observedTask.stageKey === 'release-approval') {
+            decisionSnapshot = await buildReleaseApprovalDecisionSnapshot({
+              db,
+              run: observedRun,
+              actorId: input.requestedByActorId,
+            });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await issueService(db).update(input.issue.id, { status: 'blocked' });
+          let blockedTransition: CompleteStageTaskTransition = {
+            claimed: false,
+            nextStageTask: null,
+          };
+          const blockedRun = await orchestrator.completeStageTask(
+            {
+              runId: observedRun.id,
+              stageTaskId: observedTask.issueId,
+              terminalStatus: 'blocked',
+              summary: `Approval evidence could not be finalized: ${message}`,
+              trace: {
+                decisionSnapshot: {
+                  outcome: 'blocked',
+                  actor: input.requestedByActorId ?? null,
+                  error: message,
+                },
+              },
+            },
+            (observed) => {
+              blockedTransition = observed;
+            },
+          );
+          return {
+            handled: true,
+            claimed: blockedTransition.claimed,
+            run: blockedRun,
+            nextStageTask: blockedTransition.nextStageTask,
+          };
+        }
+      }
+
       let transition: CompleteStageTaskTransition = { claimed: false, nextStageTask: null };
       const run = await orchestrator.completeStageTask(
         {
@@ -287,6 +367,7 @@ export function issuePipelineStageTraversalService(db: Db, deps: IssuePipelineSt
           outcome: status === 'done' ? input.pipelineOutcome : undefined,
           score: input.evalScore,
           summary: input.pipelineSummary,
+          trace: decisionSnapshot ? { decisionSnapshot } : undefined,
         },
         (observed) => {
           transition = observed;
@@ -308,14 +389,25 @@ export function issuePipelineStageTraversalService(db: Db, deps: IssuePipelineSt
 
       if (transition.claimed && transition.nextStageTask) {
         try {
-          const nextIssue = await resolveIssue(transition.nextStageTask.issueId);
-          if (nextIssue) {
-            await queueIssueAssignmentWakeup({
+          if (deps.repository) {
+            const nextIssue = await resolveIssue(transition.nextStageTask.issueId);
+            if (nextIssue) {
+              await queueIssueAssignmentWakeup({
+                heartbeat: deps.heartbeat,
+                issue: nextIssue,
+                reason: 'pipeline_stage_materialized',
+                mutation: 'pipeline_stage_advance',
+                contextSource: 'issue.pipeline_stage_traversal',
+                requestedByActorType: input.requestedByActorType ?? 'system',
+                requestedByActorId: input.requestedByActorId ?? null,
+              });
+            }
+          } else {
+            await queuePipelineStageTaskWakeup({
+              db,
               heartbeat: deps.heartbeat,
-              issue: nextIssue,
-              reason: 'pipeline_stage_materialized',
-              mutation: 'pipeline_stage_advance',
-              contextSource: 'issue.pipeline_stage_traversal',
+              run,
+              stageTask: transition.nextStageTask,
               requestedByActorType: input.requestedByActorType ?? 'system',
               requestedByActorId: input.requestedByActorId ?? null,
             });
@@ -330,6 +422,14 @@ export function issuePipelineStageTraversalService(db: Db, deps: IssuePipelineSt
             },
             'failed to wake newly materialized pipeline stage assignee',
           );
+          if (!deps.repository) {
+            await blockPipelineDroneDispatchFailure({
+              db,
+              run,
+              stageTask: transition.nextStageTask,
+              error: err,
+            });
+          }
         }
       }
 

@@ -16,11 +16,14 @@ import type {
 import { pipelineStepSchema, pipelineTriggerSchema } from '@paperclipai/shared';
 import { logger } from '../middleware/logger.js';
 import {
-  queueIssueAssignmentWakeup,
   type IssueAssignmentWakeupDeps,
 } from './issue-assignment-wakeup.js';
 import { issuePipelineOrchestrator } from './issue-pipeline-orchestrator.js';
 import { issuePipelineOrchestratorRepository } from './issue-pipeline-repository.js';
+import {
+  blockPipelineDroneDispatchFailure,
+  queuePipelineStageTaskWakeup,
+} from './issue-pipeline-drone-stages.js';
 import { issueService } from './issues.js';
 import { getPipelineById } from './pipelines.js';
 import {
@@ -598,15 +601,23 @@ async function repairDeliveryPlanWake(input: {
   if (hasActiveOrSucceededHeartbeat(planRuns)) {
     return { repaired: false, reason: 'plan_heartbeat_present' as const };
   }
-  await queueIssueAssignmentWakeup({
-    heartbeat: input.heartbeat,
-    issue: planIssue,
-    reason: 'pipeline_stage_materialized',
-    mutation: 'github_classification_finalized',
-    contextSource: 'github-bugs.delivery-plan',
-    requestedByActorType: 'system',
-    requestedByActorId: 'github-bugs',
-  });
+  const run = input.deliveryRun as IssuePipelineRun;
+  const repository = issuePipelineOrchestratorRepository(input.db);
+  const stageTask = (await repository.listStageTasks(run.id)).find((task) => task.issueId === planIssue.id);
+  if (!stageTask) return { repaired: false, reason: 'missing_plan_stage_identity' as const };
+  try {
+    await queuePipelineStageTaskWakeup({
+      db: input.db,
+      heartbeat: input.heartbeat,
+      run,
+      stageTask,
+      requestedByActorType: 'system',
+      requestedByActorId: 'github-bugs',
+    });
+  } catch (error) {
+    await blockPipelineDroneDispatchFailure({ db: input.db, run, stageTask, error });
+    return { repaired: false, reason: 'plan_input_blocked' as const };
+  }
   return { repaired: true, reason: 'plan_heartbeat_queued' as const };
 }
 
@@ -720,7 +731,7 @@ export async function finalizeGithubClassifierHeartbeat(input: {
   const rules: ProjectRouteRule[] = frozen.routes.map((route) => ({
     key: route.key,
     projectId: route.projectId,
-    repository: route.repository,
+    repository: route.repository as ProjectRouteRule['repository'],
     scopes: route.scopes,
     pathPrefixes: route.pathPrefixes,
   }));
@@ -764,7 +775,7 @@ export async function finalizeGithubClassifierHeartbeat(input: {
   if (!deliveryPipeline || deliveryPipeline.executionMode !== 'stage_tasks') {
     throw new Error(`Frozen delivery pipeline is unavailable: ${frozen.deliveryPipelineId}`);
   }
-  const deliverySnapshot = frozen.deliveryPipelineSnapshot;
+  const deliverySnapshot = frozen.deliveryPipelineSnapshot as IssuePipelineSnapshot;
   if (deliverySnapshot.pipelineId !== deliveryPipeline.id) {
     throw new Error('Frozen delivery pipeline identity does not match its source row');
   }
@@ -793,7 +804,7 @@ export async function finalizeGithubClassifierHeartbeat(input: {
         issueId: existingDelivery.issueId,
         sourceKey: frozen.deliverySourceKey,
         sourceDeliveryId: frozen.sourceDeliveryId,
-        pipelineSnapshot: frozen.deliveryPipelineSnapshot,
+        pipelineSnapshot: deliverySnapshot,
         routingSnapshot: existingDelivery.routingSnapshot,
       });
       const refreshedDelivery = await input.db

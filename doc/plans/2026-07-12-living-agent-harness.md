@@ -605,6 +605,9 @@ Migration must be ledger-safe, idempotent, and tested on embedded Postgres plus 
 - add operator-owned repository/scope route rules, Intake fallback, and repo-group presentation metadata;
 - materialize blocker-linked stage children and evaluator retry attempts through one transactionally safe coordinator;
 - extend Projects SDK/MCP with typed classification, exact-once stage-plan materialization, and stage completion tools.
+- Planner Drone heartbeats receive coordinator-built immutable inputs, write a run-attributed `plan` revision, and materialize the accepted typed subtask set only after the Plan HITL decision.
+- Merge-readiness accepts one primary GitHub `pull_request` work product only. Its metadata must contain explicit `headSha`, `baseRef`, `baseSha`, and a non-empty typed `checks` array; URLs and comments are never parsed as evidence.
+- Release approval freezes that PR evidence in the terminal pipeline event. The final Drone compares the approved SHA with the current stored SHA, records readiness, and completes or blocks orchestration without invoking git, GitHub merge, or push side effects.
 
 ## 16. Rollout
 
@@ -670,7 +673,7 @@ Kill switches operate per instance, company, agent, proposal type, and adapter.
 - Implementer uses its pinned OpenCode/model policy or a recorded classified fresh-session fallback and produces a draft PR, never a merge.
 - Evaluator submits a numeric score through the typed update; the ledger stores score/max score/run/harness revision. A failing score appends findings and creates implementation/evaluation attempt N+1 without mutating attempt N.
 - Release HITL records optional human score/feedback and is required before merge-readiness.
-- The merger drone returns typed readiness only; the deterministic executor rechecks approval and head SHA, merges, then marks the parent done.
+- The merger drone returns typed readiness only; Paperclip rechecks the frozen approval, target, head SHA, and checks, records `mergeExecuted: false`, and marks the orchestration complete without merging or pushing.
 - Every transition is reconstructable from origin delivery through routing, stage issues/runs, artifacts, decisions, approvals, harness revisions, resolved runtimes/models, and merge result.
 - At least one safe proposal is generated from the traversal, evaluated, displayed with exact evidence/diff, manually promoted to a canary revision, and successfully rolled back.
 - Portfolio monitor completes a read-only run, creates no duplicate issue, stays inside budget, and does not enter `error`.
