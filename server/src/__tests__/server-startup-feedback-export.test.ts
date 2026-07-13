@@ -143,6 +143,7 @@ vi.mock("../services/index.js", () => ({
     humanGrantsInserted: 0,
   })),
   feedbackService: feedbackServiceFactoryMock,
+  getRepoSandbox: vi.fn(() => null),
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
@@ -305,6 +306,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
   });
 
   afterEach(() => {
@@ -338,6 +340,19 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       expect.arrayContaining(["http://custom-api:3100"]),
     );
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+  });
+
+  it("preserves an explicitly configured PAPERCLIP_RUNTIME_API_URL", async () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
+    process.env.PAPERCLIP_API_URL = "http://100.80.222.29:3100";
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://100.80.222.29:3100");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe(
+      "http://100.80.222.29:3100",
+    );
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
