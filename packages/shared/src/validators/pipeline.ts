@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, PIPELINE_EXECUTION_MODES, PIPELINE_STEP_KINDS } from "../constants.js";
+import {
+  ISSUE_ORIGIN_KINDS,
+  ISSUE_PRIORITIES,
+  PIPELINE_EXECUTION_MODES,
+  PIPELINE_STEP_KINDS,
+} from "../constants.js";
 import { issueExecutionStagePrincipalSchema } from "./issue.js";
 
 const roleKeySchema = z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9:_-]*$/);
@@ -63,9 +68,19 @@ export const pipelineStepSchema = pipelineStepBaseSchema.superRefine((step, ctx)
   }
 });
 
+const pluginIssueOriginKindSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value): value is `plugin:${string}` => value.startsWith("plugin:"), {
+    message: "Plugin issue origin kinds must start with plugin:",
+  });
+
 export const pipelineTriggerSchema = z
   .object({
-    originKinds: z.array(z.string().trim().min(1)).optional(),
+    originKinds: z
+      .array(z.union([z.enum(ISSUE_ORIGIN_KINDS), pluginIssueOriginKindSchema]))
+      .optional(),
     labels: z.array(z.string().trim().min(1)).optional(),
     priorities: z.array(z.enum(ISSUE_PRIORITIES)).optional(),
   })

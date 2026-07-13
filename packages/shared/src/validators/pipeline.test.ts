@@ -172,4 +172,22 @@ describe("pipeline execution contracts", () => {
     expect(ISSUE_ORIGIN_KINDS).toContain("pipeline_step");
     expect(ISSUE_PIPELINE_EVENT_TYPES).toContain("run_blocked");
   });
+
+  it("accepts only typed built-in or plugin origin kinds in pipeline triggers", () => {
+    expect(
+      createPipelineSchema.parse({
+        name: "typed trigger",
+        trigger: { originKinds: ["github_issue", "plugin:github:issue"] },
+        steps: [planStep],
+      }).trigger?.originKinds,
+    ).toEqual(["github_issue", "plugin:github:issue"]);
+
+    expect(() =>
+      createPipelineSchema.parse({
+        name: "invalid trigger",
+        trigger: { originKinds: ["not-an-issue-origin"] },
+        steps: [planStep],
+      }),
+    ).toThrow();
+  });
 });

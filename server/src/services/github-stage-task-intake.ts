@@ -59,13 +59,18 @@ export const MINION_INTAKE_ALLOWED_SCOPES = [
   'docs',
 ] as const;
 
+const MINION_INTAKE_ROUTE_REPOSITORIES = [
+  ...MINION_REPOSITORY_KEYS,
+  'cross-repo',
+] as const;
+
 const routeSchema = z
   .object({
     key: z.string().trim().min(1).max(120),
     name: z.string().trim().min(1).max(240),
     projectId: z.string().uuid(),
     group: z.string().trim().min(1).max(120).optional(),
-    repository: z.enum([...MINION_REPOSITORY_KEYS, 'cross-repo'] as [string, ...string[]]),
+    repository: z.enum(MINION_INTAKE_ROUTE_REPOSITORIES),
     repositories: z.array(z.string().trim().min(1).max(240)).min(1).max(32),
     scopes: z.array(z.enum(MINION_INTAKE_ALLOWED_SCOPES)).max(64).default([]),
     pathPrefixes: z.array(z.string().trim().min(1).max(500)).max(64).optional(),
@@ -619,17 +624,10 @@ export async function finalizeGithubClassifierHeartbeat(input: {
   );
   if (!heartbeatContext.success) return { handled: false as const };
 
-  const pipelineRun = await input.db
-    .select()
-    .from(issuePipelineRuns)
-    .where(
-      and(
-        eq(issuePipelineRuns.id, heartbeatContext.data.classifierPipelineRunId),
-        eq(issuePipelineRuns.companyId, input.run.companyId),
-      ),
-    )
-    .then((rows) => rows[0] ?? null);
-  if (!pipelineRun) {
+  const pipelineRun = await issuePipelineOrchestratorRepository(input.db).getRun(
+    heartbeatContext.data.classifierPipelineRunId,
+  );
+  if (!pipelineRun || pipelineRun.companyId !== input.run.companyId) {
     throw new Error(`GitHub classifier pipeline run not found: ${heartbeatContext.data.classifierPipelineRunId}`);
   }
   const frozen = frozenIntakeContextSchema.parse(pipelineRun.routingSnapshot.intakeContext);
