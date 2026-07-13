@@ -10,10 +10,48 @@ function parseOrigin(value: string | undefined) {
   if (!value) return null;
   try {
     const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:")
+      || !url.host
+      || url.username
+      || url.password
+    ) {
+      return null;
+    }
     return `${url.protocol}//${url.host}`.toLowerCase();
   } catch {
     return null;
   }
+}
+
+function parseConfiguredOrigin(value: string | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const url = new URL(trimmed);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:")
+      || !url.host
+      || url.username
+      || url.password
+      || url.pathname !== "/"
+      || url.search
+      || url.hash
+    ) {
+      return null;
+    }
+    return url.origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function configuredTrustedOrigins() {
+  return (process.env.PAPERCLIP_TRUSTED_BOARD_ORIGINS ?? "")
+    .split(",")
+    .map(parseConfiguredOrigin)
+    .filter((origin): origin is string => origin !== null);
 }
 
 function trustedOriginsForRequest(req: Request) {
@@ -30,12 +68,15 @@ function trustedOriginsForRequest(req: Request) {
   // explicitly-configured PAPERCLIP_PUBLIC_URL when it's set.
   const publicUrl = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
   if (publicUrl) origins.add(publicUrl);
+  for (const origin of configuredTrustedOrigins()) {
+    origins.add(origin);
+  }
   return origins;
 }
 
 function isTrustedBoardMutationRequest(req: Request) {
   const allowedOrigins = trustedOriginsForRequest(req);
-  const origin = parseOrigin(req.header("origin"));
+  const origin = parseConfiguredOrigin(req.header("origin"));
   if (origin && allowedOrigins.has(origin)) return true;
 
   const refererOrigin = parseOrigin(req.header("referer"));
