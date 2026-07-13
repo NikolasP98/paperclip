@@ -108,6 +108,7 @@ import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
+import { captureDecisionLearningSignal } from "../services/agent-harness.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
@@ -5083,6 +5084,7 @@ export function issueRoutes(
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
       evalScore: req.body.evalScore === undefined ? undefined : (req.body.evalScore as number),
+      feedbackScore: req.body.feedbackScore === undefined ? undefined : (req.body.feedbackScore as number),
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -5220,6 +5222,19 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (transition.decision && decisionId) {
+      const learningState = parseIssueExecutionState(existing.executionState);
+      const workerAgentId = learningState?.returnAssignee?.type === "agent"
+        ? learningState.returnAssignee.agentId ?? null
+        : null;
+      await captureDecisionLearningSignal(db, {
+        companyId: issue.companyId, issueId: issue.id, decisionId, workerAgentId,
+        outcome: transition.decision.outcome, score: transition.decision.score ?? null,
+        maxScore: transition.decision.maxScore ?? null, body: transition.decision.body,
+        runId: actor.runId ?? null,
+      }).catch((err) => logger.warn({ err, issueId: issue.id, decisionId }, "failed to capture agent learning signal"));
     }
 
     let cancelledStatusRunId: string | null = null;

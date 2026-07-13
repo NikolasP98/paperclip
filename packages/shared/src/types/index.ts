@@ -186,6 +186,7 @@ export type {
 } from "./document-annotation.js";
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type { Portfolio } from "./portfolio.js";
+export type * from "./agent-harness.js";
 export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./pipeline.js";
 export type {
   CompanySearchHighlight,

@@ -104,6 +104,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentHarnessService } from "./agent-harness.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -7792,6 +7793,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    const harness = await agentHarnessService(db).compactContext(agent.id, agent.companyId);
+    if (harness) {
+      context.paperclipHarness = harness;
+      await db.update(heartbeatRuns).set({
+        harnessRevisionId: harness.revisionId,
+        contextSnapshot: context,
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, run.id));
+    }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
@@ -8987,6 +8997,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       while (activeIndex < effectiveChain.length) {
         const entry = effectiveChain[activeIndex];
+        await db.update(heartbeatRuns).set({
+          resolvedAdapterType: entry.type,
+          resolvedModel: readNonEmptyString(entry.model),
+          resolvedProvider: readNonEmptyString(entry.provider),
+          updatedAt: new Date(),
+        }).where(eq(heartbeatRuns.id, run.id));
         const adapter = getServerAdapter(entry.type);
         const authToken = adapter.supportsLocalAgentJwt
           ? createLocalAgentJwt(agent.id, agent.companyId, entry.type, run.id)
@@ -9214,6 +9230,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
 
       let persistedRun = await setRunStatus(run.id, status, {
+        resolvedAdapterType: effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.type ?? agent.adapterType,
+        resolvedModel: readNonEmptyString(adapterResult.model) ?? readNonEmptyString(effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.model),
+        resolvedProvider: readNonEmptyString(adapterResult.provider) ?? readNonEmptyString(effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.provider),
         finishedAt: new Date(),
         error: runErrorMessage,
         errorCode: runErrorCode,

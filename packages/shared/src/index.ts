@@ -1438,6 +1438,7 @@ export type {
 export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
 
 export type { Portfolio } from "./types/portfolio.js";
+export type * from "./types/agent-harness.js";
 export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./types/pipeline.js";
 
 export {
@@ -1459,6 +1460,8 @@ export {
   type CreatePortfolio,
   type UpdatePortfolio,
 } from "./validators/portfolio.js";
+
+export { agentHarnessRoleKeySchema, agentHarnessIdsQuerySchema, roleRoutingPolicySchema } from "./validators/agent-harness.js";
 
 export {
   adapterRegistryEntrySchema,

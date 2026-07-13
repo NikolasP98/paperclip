@@ -544,6 +544,8 @@ export {
   type UpdatePortfolio,
 } from "./portfolio.js";
 
+export { agentHarnessRoleKeySchema, agentHarnessIdsQuerySchema, roleRoutingPolicySchema } from "./agent-harness.js";
+
 export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,

@@ -750,6 +750,13 @@
 			"when": 1700006360000,
 			"tag": "0106_decision_scores",
 			"breakpoints": true
+		},
+		{
+			"idx": 107,
+			"version": "7",
+			"when": 1700006420000,
+			"tag": "0107_agent_living_harness",
+			"breakpoints": true
 		}
 	]
 }

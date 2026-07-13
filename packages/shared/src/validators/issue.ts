@@ -451,6 +451,8 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   hiddenAt: z.string().datetime().nullable().optional(),
   /** Score submitted alongside a `done` decision on an eval-kind execution stage (server/src/services/issue-execution-policy.ts). Ignored on non-eval stages. */
   evalScore: z.number().finite().optional(),
+  /** Optional 0-10 feedback on non-eval review and approval decisions. */
+  feedbackScore: z.number().finite().min(0).max(10).optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
