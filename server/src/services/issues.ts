@@ -5153,9 +5153,9 @@ export function issueService(db: Db) {
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+        if (issueData.executionWorkspaceId !== null) delete issueData.executionWorkspaceId;
+        if (issueData.executionWorkspacePreference !== null) delete issueData.executionWorkspacePreference;
+        if (issueData.executionWorkspaceSettings !== null) delete issueData.executionWorkspaceSettings;
       }
 
       if (issueData.status) {

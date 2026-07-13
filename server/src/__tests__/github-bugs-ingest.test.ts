@@ -7,6 +7,7 @@ import {
   activityLog,
   companies,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
   issuePipelineEvents,
   issuePipelineRuns,
@@ -14,6 +15,7 @@ import {
   labels,
   pipelines,
   portfolios,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import {
@@ -147,6 +149,15 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
       { id: intakeProjectId, companyId, portfolioId, name: "Portfolio Intake" },
       { id: workforceProjectId, companyId, portfolioId, name: "Workforce / Projects" },
     ]);
+    const intakeProjectWorkspaceId = randomUUID();
+    await db.insert(projectWorkspaces).values({
+      id: intakeProjectWorkspaceId,
+      companyId,
+      projectId: intakeProjectId,
+      name: "Portfolio intake workspace",
+      cwd: "/tmp/portfolio-intake",
+      isPrimary: true,
+    });
     await db.insert(pipelines).values({
       id: pipelineId,
       companyId,
@@ -208,6 +219,7 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
       classifierAgentId,
       harnessRevisionId,
       intakeProjectId,
+      intakeProjectWorkspaceId,
       workforceProjectId,
       pipelineId,
     };
@@ -325,6 +337,36 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
     expect(first).toMatchObject({ action: "created", pipelineRunId: expect.any(String) });
     expect(replay).toMatchObject({ action: "duplicate", pipelineRunId: first.pipelineRunId });
     expect(wakeup).toHaveBeenCalledTimes(1);
+    const intakeExecutionWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: intakeExecutionWorkspaceId,
+      companyId,
+      projectId: seeded.intakeProjectId,
+      projectWorkspaceId: seeded.intakeProjectWorkspaceId,
+      mode: "reuse_project",
+      strategyType: "direct",
+      name: "Portfolio intake execution",
+      cwd: "/tmp/portfolio-intake",
+    });
+    await db
+      .update(issues)
+      .set({
+        projectWorkspaceId: seeded.intakeProjectWorkspaceId,
+        executionWorkspaceId: intakeExecutionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      })
+      .where(eq(issues.id, (first as { issueId: string }).issueId));
+    const rootBeforeClassification = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, (first as { issueId: string }).issueId))
+      .then((rows) => rows[0]);
+    expect(rootBeforeClassification).toMatchObject({
+      projectId: seeded.intakeProjectId,
+      projectWorkspaceId: seeded.intakeProjectWorkspaceId,
+      executionWorkspaceId: intakeExecutionWorkspaceId,
+    });
     const classifierWake = wakeup.mock.calls[0];
     expect(classifierWake?.[0]).toBe(seeded.classifierAgentId);
     expect(classifierWake?.[1]).toMatchObject({
@@ -441,6 +483,10 @@ describeEmbeddedPostgres("github-bugs ingestion", () => {
     );
     expect(root).toMatchObject({
       projectId: seeded.workforceProjectId,
+      projectWorkspaceId: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
       status: "blocked",
       assigneeAgentId: null,
     });

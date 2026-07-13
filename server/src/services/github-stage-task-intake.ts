@@ -837,8 +837,17 @@ export async function finalizeGithubClassifierHeartbeat(input: {
     input.run.companyId,
     classification,
   );
+  const changedProject = root.projectId !== decision.projectId;
   await issueSvc.update(root.id, {
     projectId: decision.projectId,
+    ...(changedProject
+      ? {
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+          executionWorkspaceSettings: null,
+        }
+      : {}),
     labelIds: [...new Set([...(root.labelIds ?? []), ...classificationLabelIds])],
   });
   const currentStage = await issueSvc.getById(stageTask.id);
