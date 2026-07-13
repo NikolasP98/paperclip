@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  agentLearningSignals,
   agents,
   companyMemberships,
   companies,
@@ -27,6 +28,7 @@ import { documentService } from './documents.js';
 import { issueService } from './issues.js';
 import {
   finalizePipelineDroneHeartbeat,
+  IMPLEMENTATION_EVALUATION_RUBRIC_SUMMARY,
   implementationEvaluatorDroneInputSchema,
   implementationEvaluatorDroneOutputSchema,
   mergeEvidenceReady,
@@ -136,6 +138,87 @@ describe('pipeline Drone contracts', () => {
     expect(() => validateImplementationEvaluationDecision(input, output)).toThrow(
       /rubric keys do not match frozen input/,
     );
+  });
+
+  it('requires the top-level evaluator score to match the weighted rubric aggregate', () => {
+    const input = implementationEvaluatorDroneInputSchema.parse({
+      issue: {
+        source: 'github',
+        repository: 'NikolasP98/minion_hub',
+        externalId: '56',
+        title: 'Fix storage fallback',
+        body: 'localStorage can throw.',
+        labels: ['bug'],
+      },
+      approvedSpec: '# Plan',
+      implementation: {
+        summary: 'Guard storage access.',
+        changedFiles: ['src/lib/theme.ts'],
+        diff: '+ try { localStorage.setItem(...) } catch {}',
+        testResults: [{ command: 'bun test theme', status: 'passed', output: 'green' }],
+      },
+      rubric: [
+        { key: 'correctness', description: 'Fixes the root cause.', weight: 3 },
+        { key: 'coverage', description: 'Includes a regression test.', weight: 1 },
+      ],
+      passingScore: 7,
+    });
+    const validOutput = implementationEvaluatorDroneOutputSchema.parse({
+      score: 8,
+      rubricScores: [
+        { key: 'correctness', score: 9, rationale: 'The guard fixes the fault.' },
+        { key: 'coverage', score: 5, rationale: 'Coverage is incomplete.' },
+      ],
+      findings: [],
+      requiredChanges: [],
+      recommendation: 'approve',
+      summary: 'The weighted score is eight.',
+    });
+    expect(validateImplementationEvaluationDecision(input, validOutput)).toBe(true);
+    expect(() =>
+      validateImplementationEvaluationDecision(input, { ...validOutput, score: 9 }),
+    ).toThrow(/weighted rubric aggregate 8.00/);
+  });
+
+  it('rejects evaluator recommendations that contradict the passing threshold', () => {
+    const input = implementationEvaluatorDroneInputSchema.parse({
+      issue: {
+        source: 'github',
+        repository: 'NikolasP98/minion_hub',
+        externalId: '56',
+        title: 'Fix storage fallback',
+        body: 'localStorage can throw.',
+        labels: ['bug'],
+      },
+      approvedSpec: '# Plan',
+      implementation: {
+        summary: 'Guard storage access.',
+        changedFiles: [],
+        diff: 'No implementation diff supplied.',
+        testResults: [],
+      },
+      rubric: [{ key: 'correctness', description: 'Fixes the root cause.', weight: 1 }],
+      passingScore: 7,
+    });
+    const output = implementationEvaluatorDroneOutputSchema.parse({
+      score: 8,
+      rubricScores: [{ key: 'correctness', score: 8, rationale: 'Correct.' }],
+      findings: [],
+      requiredChanges: [],
+      recommendation: 'revise',
+      summary: 'The implementation passes.',
+    });
+    expect(() => validateImplementationEvaluationDecision(input, output)).toThrow(
+      /must recommend approve/,
+    );
+    expect(() =>
+      validateImplementationEvaluationDecision(input, {
+        ...output,
+        score: 6,
+        rubricScores: [{ key: 'correctness', score: 6, rationale: 'Incomplete.' }],
+        recommendation: 'approve',
+      }),
+    ).toThrow(/cannot recommend approve/);
   });
 });
 
@@ -503,7 +586,7 @@ describeDb('merge-readiness finalizer', () => {
           kind: 'eval',
           label: 'Evaluate',
           participant: { type: 'agent', agentId: evaluatorId },
-          rubric: 'Score correctness, spec coverage, regression protection, evidence, and safety.',
+          rubric: IMPLEMENTATION_EVALUATION_RUBRIC_SUMMARY,
           minScore: 7,
           maxScore: 10,
           onFailStepKey: 'implement',
@@ -713,11 +796,32 @@ describeDb('merge-readiness finalizer', () => {
         finishedAt: new Date(),
       })
       .returning();
-    const retryWake = vi.fn().mockResolvedValue({ id: 'retry-wake' });
+    const acceptedRetryWakeKeys = new Set<string>();
+    const retryWake = vi.fn(
+      async (_agentId: string, options: { idempotencyKey?: string | null }) => {
+        const key = options.idempotencyKey;
+        if (!key) throw new Error('pipeline retry wake requires an idempotency key');
+        const duplicate = acceptedRetryWakeKeys.has(key);
+        acceptedRetryWakeKeys.add(key);
+        return { id: 'retry-wake', duplicate };
+      },
+    );
     const finalized = await finalizePipelineDroneHeartbeat({
       db,
       heartbeat: { wakeup: retryWake },
       run: heartbeat!,
+    });
+    const transition = 'transition' in finalized ? finalized.transition : undefined;
+    if (!transition) throw new Error('evaluator finalizer omitted transition');
+    const retryStage = transition.nextStageTask;
+    expect(retryStage).toMatchObject({ stageKey: 'implement', attempt: 2 });
+    const initiallyAnnotatedRetry = await issueService(db).getById(retryStage!.issueId);
+    expect(initiallyAnnotatedRetry?.description).toContain('Evaluator feedback for this retry');
+    await issueService(db).update(retryStage!.issueId, {
+      description: initiallyAnnotatedRetry!.description!.replace(
+        /<!-- paperclip:evaluator-feedback:start -->[\s\S]*?<!-- paperclip:evaluator-feedback:end -->/,
+        '',
+      ),
     });
     const replay = await finalizePipelineDroneHeartbeat({
       db,
@@ -728,15 +832,42 @@ describeDb('merge-readiness finalizer', () => {
     expect(finalized.status).toBe('changes_requested');
     expect(finalized.run).toMatchObject({ status: 'active', currentStepKey: 'implement' });
     expect(replay.status).toBe('reconciled');
-    expect(retryWake).toHaveBeenCalledTimes(1);
-    const transition = 'transition' in finalized ? finalized.transition : undefined;
-    if (!transition) throw new Error('evaluator finalizer omitted transition');
-    const retryStage = transition.nextStageTask;
-    expect(retryStage).toMatchObject({ stageKey: 'implement', attempt: 2 });
+    expect(retryWake).toHaveBeenCalledTimes(2);
+    expect(acceptedRetryWakeKeys).toEqual(
+      new Set([`pipeline-stage:${started.run.id}:${retryStage!.issueId}`]),
+    );
     const retryIssue = await issueService(db).getById(retryStage!.issueId);
     expect(retryIssue?.description).toContain('Evaluator feedback for this retry');
     expect(retryIssue?.description).toContain('Missing throwing-read coverage');
     expect(retryIssue?.description).toContain('Explicitly exercise storage accessors');
+    expect(
+      retryIssue?.description?.match(/<!-- paperclip:evaluator-feedback:start -->/g),
+    ).toHaveLength(1);
+    const learningSignals = await db
+      .select()
+      .from(agentLearningSignals)
+      .where(eq(agentLearningSignals.companyId, companyId));
+    expect(learningSignals).toHaveLength(1);
+    expect(learningSignals[0]).toMatchObject({
+      agentId: implementerId,
+      issueId: implementStage!.issueId,
+      signalType: 'pipeline_evaluation',
+      outcome: 'changes_requested',
+      score: 6,
+      maxScore: 10,
+      metadata: {
+        source: 'stage_task_pipeline',
+        pipelineRunId: started.run.id,
+        gateTaskId: evaluatorStage!.issueId,
+        evaluationEvidence: {
+          droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+          recommendation: 'revise',
+          requiredChangeCount: 1,
+          hasSpecDelta: true,
+        },
+      },
+    });
+    expect(learningSignals[0]!.body).toContain('Missing throwing-read coverage');
     const terminal = await db
       .select()
       .from(issuePipelineEvents)

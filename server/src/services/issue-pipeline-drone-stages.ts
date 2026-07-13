@@ -17,6 +17,8 @@ import {
   type Db,
 } from '@paperclipai/db';
 import { createIssueThreadInteractionSchema, type IssuePipelineRun } from '@paperclipai/shared';
+import { logger } from '../middleware/logger.js';
+import { capturePipelineStageLearning } from './issue-pipeline-stage-learning.js';
 import { documentService } from './documents.js';
 import { issueThreadInteractionService } from './issue-thread-interactions.js';
 import {
@@ -249,6 +251,11 @@ const implementationEvidenceMetadataSchema = z
   })
   .passthrough();
 
+export const IMPLEMENTATION_EVALUATION_RUBRIC_SUMMARY =
+  'Score root-cause correctness, approved-spec coverage, regression protection, verification evidence, and repository safety. Include criterion-level findings and an aggregate score.';
+const IMPLEMENTATION_EVALUATION_MAX_SCORE = 10;
+const IMPLEMENTATION_EVALUATION_SCORE_TOLERANCE = 0.050_000_001;
+
 const IMPLEMENTATION_EVALUATION_RUBRIC = [
   {
     key: 'root-cause-correctness',
@@ -350,17 +357,38 @@ function truncate(value: string | null | undefined, max: number): string {
     .join('');
 }
 
+function truncateCodeUnits(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const sliced = value.slice(0, max);
+  const finalCodeUnit = sliced.charCodeAt(sliced.length - 1);
+  return finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff ? sliced.slice(0, -1) : sliced;
+}
+
 function appendAcceptedPlanHandoff(description: string | null, handoff: string): string {
+  return replaceMarkedSection(
+    description,
+    ACCEPTED_PLAN_HANDOFF_START,
+    ACCEPTED_PLAN_HANDOFF_END,
+    handoff,
+  );
+}
+
+function replaceMarkedSection(
+  description: string | null,
+  startMarker: string,
+  endMarker: string,
+  section: string,
+): string {
   const current = description?.trim() ?? '';
-  const markerStart = current.indexOf(ACCEPTED_PLAN_HANDOFF_START);
-  const markerEnd = markerStart < 0 ? -1 : current.indexOf(ACCEPTED_PLAN_HANDOFF_END, markerStart);
-  const existingHandoffEnd =
-    markerEnd < markerStart ? current.length : markerEnd + ACCEPTED_PLAN_HANDOFF_END.length;
+  const markerStart = current.indexOf(startMarker);
+  const markerEnd = markerStart < 0 ? -1 : current.indexOf(endMarker, markerStart);
+  const existingSectionEnd =
+    markerEnd < markerStart ? current.length : markerEnd + endMarker.length;
   const withoutExisting =
     markerStart < 0
       ? current
-      : [current.slice(0, markerStart), current.slice(existingHandoffEnd)].join('').trim();
-  return [withoutExisting || null, handoff].filter(Boolean).join('\n\n');
+      : [current.slice(0, markerStart), current.slice(existingSectionEnd)].join('').trim();
+  return [withoutExisting || null, section].filter(Boolean).join('\n\n');
 }
 
 async function buildAcceptedPlanHandoff(
@@ -802,14 +830,7 @@ async function buildImplementationEvaluatorInput(
   db: Db,
   run: IssuePipelineRun,
 ): Promise<ImplementationEvaluatorInput> {
-  const step = run.pipelineSnapshot.steps.find((candidate) => candidate.key === 'evaluate');
-  if (!step || step.kind !== 'eval') {
-    throw new Error('implementation evaluator requires the frozen Evaluate pipeline step');
-  }
-  const passingScore = step.minScore;
-  if (typeof passingScore !== 'number' || passingScore < 0 || passingScore > 10) {
-    throw new Error('implementation evaluator requires a passing score between 0 and 10');
-  }
+  const { passingScore } = implementationEvaluatorPolicy(run);
   const [{ reference }, acceptedPlan, pullRequest] = await Promise.all([
     loadRootIssueReference(db, run),
     loadAcceptedPlanSpec(db, run),
@@ -822,6 +843,34 @@ async function buildImplementationEvaluatorInput(
     rubric: IMPLEMENTATION_EVALUATION_RUBRIC,
     passingScore,
   });
+}
+
+function implementationEvaluatorPolicy(run: IssuePipelineRun) {
+  const step = run.pipelineSnapshot.steps.find((candidate) => candidate.key === 'evaluate');
+  if (!step || step.kind !== 'eval') {
+    throw new Error('implementation evaluator requires the frozen Evaluate pipeline step');
+  }
+  const passingScore = step.minScore;
+  if (
+    typeof passingScore !== 'number' ||
+    passingScore < 0 ||
+    passingScore > IMPLEMENTATION_EVALUATION_MAX_SCORE
+  ) {
+    throw new Error(
+      `implementation evaluator requires a passing score between 0 and ${IMPLEMENTATION_EVALUATION_MAX_SCORE}`,
+    );
+  }
+  if (step.maxScore !== IMPLEMENTATION_EVALUATION_MAX_SCORE) {
+    throw new Error(
+      `implementation evaluator requires frozen maxScore=${IMPLEMENTATION_EVALUATION_MAX_SCORE}`,
+    );
+  }
+  if (step.rubric?.trim() !== IMPLEMENTATION_EVALUATION_RUBRIC_SUMMARY) {
+    throw new Error(
+      'implementation evaluator frozen rubric does not match the bounded Drone contract',
+    );
+  }
+  return { step, passingScore, maxScore: IMPLEMENTATION_EVALUATION_MAX_SCORE };
 }
 
 async function loadReleaseApprovalEvidence(db: Db, run: IssuePipelineRun) {
@@ -954,6 +1003,7 @@ export async function queuePipelineStageTaskWakeup(input: {
       contextSource: 'issue.pipeline_stage_traversal',
       requestedByActorType: input.requestedByActorType ?? 'system',
       requestedByActorId: input.requestedByActorId ?? null,
+      idempotencyKey: `pipeline-stage:${input.run.id}:${input.stageTask.issueId}`,
       contextSnapshot: acceptedPlanHandoff
         ? {
             acceptedPlanRevisionId: acceptedPlanHandoff.acceptedPlanRevisionId,
@@ -1092,7 +1142,8 @@ export function validateImplementationEvaluationDecision(
   input: ImplementationEvaluatorInput,
   output: ImplementationEvaluatorOutput,
 ) {
-  const expectedKeys = new Set(input.rubric.map((criterion) => criterion.key));
+  const rubricByKey = new Map(input.rubric.map((criterion) => [criterion.key, criterion]));
+  const expectedKeys = new Set(rubricByKey.keys());
   const observedKeys = output.rubricScores.map((criterion) => criterion.key);
   if (new Set(observedKeys).size !== observedKeys.length) {
     throw new Error('implementation evaluation returned duplicate rubric keys');
@@ -1104,7 +1155,25 @@ export function validateImplementationEvaluationDecision(
       `implementation evaluation rubric keys do not match frozen input (missing: ${missing.join(', ') || 'none'}; unknown: ${unknown.join(', ') || 'none'})`,
     );
   }
-  return output.score >= input.passingScore;
+  const totalWeight = input.rubric.reduce((sum, criterion) => sum + criterion.weight, 0);
+  const weightedScore = output.rubricScores.reduce(
+    (sum, criterion) => sum + criterion.score * rubricByKey.get(criterion.key)!.weight,
+    0,
+  );
+  const expectedScore = weightedScore / totalWeight;
+  if (Math.abs(output.score - expectedScore) > IMPLEMENTATION_EVALUATION_SCORE_TOLERANCE) {
+    throw new Error(
+      `implementation evaluation score ${output.score} does not match weighted rubric aggregate ${expectedScore.toFixed(2)}`,
+    );
+  }
+  const passed = output.score >= input.passingScore;
+  if (passed && output.recommendation !== 'approve') {
+    throw new Error('passing implementation evaluation must recommend approve');
+  }
+  if (!passed && output.recommendation === 'approve') {
+    throw new Error('failing implementation evaluation cannot recommend approve');
+  }
+  return passed;
 }
 
 const EVALUATOR_FEEDBACK_START = '<!-- paperclip:evaluator-feedback:start -->';
@@ -1123,9 +1192,8 @@ async function attachEvaluatorFeedbackToRetry(input: {
     (finding) => `- [${finding.severity}] ${finding.title}: ${finding.evidence}`,
   );
   const requiredChanges = input.output.requiredChanges.map((change) => `- ${change}`);
-  const feedback = truncate(
+  const feedbackBody = truncate(
     [
-      EVALUATOR_FEEDBACK_START,
       '## Evaluator feedback for this retry',
       '',
       `Score: ${input.output.score}/10 (passing: ${input.passingScore}/10)`,
@@ -1141,12 +1209,155 @@ async function attachEvaluatorFeedbackToRetry(input: {
       ...(input.output.specDelta
         ? ['', 'Spec delta for this iteration:', input.output.specDelta]
         : []),
-      EVALUATOR_FEEDBACK_END,
     ].join('\n'),
-    24_000,
+    23_800,
   );
-  const description = [issue.description?.trim() || null, feedback].filter(Boolean).join('\n\n');
-  await issueService(input.db).update(issue.id, { description });
+  const feedback = [EVALUATOR_FEEDBACK_START, feedbackBody, EVALUATOR_FEEDBACK_END].join('\n');
+  const description = replaceMarkedSection(
+    issue.description,
+    EVALUATOR_FEEDBACK_START,
+    EVALUATOR_FEEDBACK_END,
+    feedback,
+  );
+  if (description !== issue.description) {
+    await issueService(input.db).update(issue.id, { description });
+  }
+}
+
+function evaluatorLearningBody(
+  output: ImplementationEvaluatorOutput,
+  passingScore: number,
+  maxScore: number,
+) {
+  return truncateCodeUnits(
+    [
+      `Implementation evaluation: ${output.score}/${maxScore} (passing: ${passingScore}/${maxScore}); recommendation: ${output.recommendation}.`,
+      '',
+      output.summary,
+      ...(output.findings.length > 0
+        ? [
+            '',
+            'Findings:',
+            ...output.findings.map(
+              (finding) => `- [${finding.severity}] ${finding.title}: ${finding.evidence}`,
+            ),
+          ]
+        : []),
+      ...(output.requiredChanges.length > 0
+        ? ['', 'Required changes:', ...output.requiredChanges.map((change) => `- ${change}`)]
+        : []),
+      ...(output.specDelta ? ['', 'Spec delta:', output.specDelta] : []),
+    ].join('\n'),
+    4_000,
+  );
+}
+
+async function reconcileImplementationEvaluationEffects(input: {
+  db: Db;
+  heartbeat: IssueAssignmentWakeupDeps;
+  run: IssuePipelineRun;
+  stageTask: IssuePipelineStageTask;
+  evaluatorHeartbeatRunId: string;
+  output: ImplementationEvaluatorOutput;
+  passingScore: number;
+  maxScore: number;
+  passed: boolean;
+}) {
+  const repository = issuePipelineOrchestratorRepository(input.db);
+  try {
+    await capturePipelineStageLearning(
+      input.db,
+      repository,
+      {
+        issue: {
+          id: input.stageTask.issueId,
+          companyId: input.run.companyId,
+          status: 'done',
+        },
+        pipelineOutcome: input.passed ? 'passed' : 'failed',
+        pipelineSummary: evaluatorLearningBody(input.output, input.passingScore, input.maxScore),
+        evalScore: input.output.score,
+        learningMetadata: {
+          droneId: PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID,
+          evaluatorHeartbeatRunId: input.evaluatorHeartbeatRunId,
+          recommendation: input.output.recommendation,
+          rubricScores: input.output.rubricScores.map(({ key, score }) => ({ key, score })),
+          findings: input.output.findings.slice(0, 12).map(({ severity, title }) => ({
+            severity,
+            title: truncate(title, 200),
+          })),
+          requiredChangeCount: input.output.requiredChanges.length,
+          hasSpecDelta: Boolean(input.output.specDelta),
+        },
+      },
+      input.run,
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        err: error,
+        pipelineRunId: input.run.id,
+        evaluatorStageTaskId: input.stageTask.issueId,
+      },
+      'failed to reconcile evaluator harness learning signal',
+    );
+  }
+
+  if (input.run.status !== 'active') return null;
+  const evaluatorStep = input.run.pipelineSnapshot.steps.find(
+    (candidate) => candidate.key === input.stageTask.stageKey,
+  );
+  const retryStepKey = evaluatorStep?.kind === 'eval' ? evaluatorStep.onFailStepKey : null;
+  const downstreamStepKey = input.passed ? input.run.currentStepKey : retryStepKey;
+  if (!downstreamStepKey || input.run.currentStepKey !== downstreamStepKey) return null;
+  const downstreamTask = (await repository.listStageTasks(input.run.id))
+    .filter((task) => task.stageKey === downstreamStepKey)
+    .sort((left, right) => right.attempt - left.attempt)[0];
+  if (!downstreamTask) {
+    logger.warn(
+      {
+        pipelineRunId: input.run.id,
+        evaluatorStageTaskId: input.stageTask.issueId,
+        downstreamStepKey,
+      },
+      'evaluator downstream stage is current but its task is missing',
+    );
+    return null;
+  }
+
+  if (!input.passed) {
+    try {
+      await attachEvaluatorFeedbackToRetry({
+        db: input.db,
+        stageTask: downstreamTask,
+        output: input.output,
+        passingScore: input.passingScore,
+      });
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          pipelineRunId: input.run.id,
+          retryStageTaskId: downstreamTask.issueId,
+        },
+        'failed to reconcile evaluator feedback onto implementation retry',
+      );
+    }
+  }
+  try {
+    await queuePipelineStageTaskWakeup({
+      db: input.db,
+      heartbeat: input.heartbeat,
+      run: input.run,
+      stageTask: downstreamTask,
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error, pipelineRunId: input.run.id, downstreamStageTaskId: downstreamTask.issueId },
+      'failed to reconcile evaluator downstream wakeup',
+    );
+  }
+  return downstreamTask;
 }
 
 async function listStageHeartbeatRuns(db: Db, companyId: string, stageTaskId: string) {
@@ -1275,7 +1486,15 @@ export async function finalizePipelineDroneHeartbeat(input: {
     throw new Error('attributed pipeline Drone stage task does not match its frozen context');
   }
   const existingTerminalEvent = await input.db
-    .select({ id: issuePipelineEvents.id })
+    .select({
+      id: issuePipelineEvents.id,
+      inputSnapshot: issuePipelineEvents.inputSnapshot,
+      outputSnapshot: issuePipelineEvents.outputSnapshot,
+      decisionSnapshot: issuePipelineEvents.decisionSnapshot,
+      heartbeatRunId: issuePipelineEvents.heartbeatRunId,
+      score: issuePipelineEvents.score,
+      maxScore: issuePipelineEvents.maxScore,
+    })
     .from(issuePipelineEvents)
     .where(
       and(
@@ -1285,6 +1504,45 @@ export async function finalizePipelineDroneHeartbeat(input: {
     )
     .then((rows) => rows[0] ?? null);
   if (existingTerminalEvent) {
+    if (context.data.droneId === PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID) {
+      const parsedInput = implementationEvaluatorDroneInputSchema.safeParse(
+        existingTerminalEvent.inputSnapshot,
+      );
+      const parsedOutput = implementationEvaluatorDroneOutputSchema.safeParse(
+        asRecord(existingTerminalEvent.outputSnapshot).validatedOutput,
+      );
+      const decision = asRecord(existingTerminalEvent.decisionSnapshot);
+      if (parsedInput.success && parsedOutput.success) {
+        const { maxScore } = implementationEvaluatorPolicy(run);
+        const passed = validateImplementationEvaluationDecision(
+          parsedInput.data,
+          parsedOutput.data,
+        );
+        if (decision.outcome !== (passed ? 'passed' : 'failed')) {
+          throw new Error('terminal evaluator event decision contradicts its validated evidence');
+        }
+        if (
+          existingTerminalEvent.score !== parsedOutput.data.score ||
+          existingTerminalEvent.maxScore !== maxScore
+        ) {
+          throw new Error('terminal evaluator event score contradicts its validated evidence');
+        }
+        const currentRun = await issuePipelineOrchestratorRepository(input.db).getRun(run.id);
+        if (!currentRun) throw new Error(`pipeline run not found during reconciliation: ${run.id}`);
+        await reconcileImplementationEvaluationEffects({
+          db: input.db,
+          heartbeat: input.heartbeat,
+          run: currentRun,
+          stageTask,
+          evaluatorHeartbeatRunId: existingTerminalEvent.heartbeatRunId ?? input.run.id,
+          output: parsedOutput.data,
+          passingScore: parsedInput.data.passingScore,
+          maxScore,
+          passed,
+        });
+        return { handled: true as const, status: 'reconciled' as const, run: currentRun };
+      }
+    }
     return { handled: true as const, status: 'reconciled' as const, run };
   }
   const step = run.pipelineSnapshot.steps.find((candidate) => candidate.key === stageTask.stageKey);
@@ -1427,6 +1685,7 @@ export async function finalizePipelineDroneHeartbeat(input: {
   }
 
   if (context.data.droneId === PORTFOLIO_IMPLEMENTATION_EVALUATOR_DRONE_ID) {
+    const { maxScore } = implementationEvaluatorPolicy(run);
     const parsedInput = implementationEvaluatorDroneInputSchema.safeParse(frozenInput);
     const parsedOutput = implementationEvaluatorDroneOutputSchema.safeParse(result.output);
     let decisionError: string | null = null;
@@ -1470,7 +1729,7 @@ export async function finalizePipelineDroneHeartbeat(input: {
         terminalStatus: 'done',
         outcome: passed ? 'passed' : 'failed',
         score: parsedOutput.data.score,
-        maxScore: 10,
+        maxScore,
         summary: parsedOutput.data.summary,
         trace: {
           ...heartbeatTrace(input.run),
@@ -1482,7 +1741,7 @@ export async function finalizePipelineDroneHeartbeat(input: {
           decisionSnapshot: {
             outcome: passed ? 'passed' : 'failed',
             score: parsedOutput.data.score,
-            maxScore: 10,
+            maxScore,
             passingScore: parsedInput.data.passingScore,
             recommendation: parsedOutput.data.recommendation,
           },
@@ -1492,19 +1751,16 @@ export async function finalizePipelineDroneHeartbeat(input: {
         transition = observed;
       },
     );
-    if (!passed && transition.claimed && transition.nextStageTask) {
-      await attachEvaluatorFeedbackToRetry({
-        db: input.db,
-        stageTask: transition.nextStageTask,
-        output: parsedOutput.data,
-        passingScore: parsedInput.data.passingScore,
-      });
-    }
-    await queueTransitionStage({
+    await reconcileImplementationEvaluationEffects({
       db: input.db,
       heartbeat: input.heartbeat,
       run: completed,
-      transition,
+      stageTask,
+      evaluatorHeartbeatRunId: input.run.id,
+      output: parsedOutput.data,
+      passingScore: parsedInput.data.passingScore,
+      maxScore,
+      passed,
     });
     return {
       handled: true as const,
