@@ -1764,7 +1764,15 @@ type ResumeSessionRow = {
   sessionParamsJson: Record<string, unknown> | null;
   sessionDisplayId: string | null;
   lastRunId: string | null;
+  harnessRevisionId?: string | null;
 };
+
+export function shouldResetTaskSessionForHarnessRevision(input: {
+  currentHarnessRevisionId: string | null;
+  taskSessionHarnessRevisionId: string | null;
+}) {
+  return input.currentHarnessRevisionId !== input.taskSessionHarnessRevisionId;
+}
 
 export function buildExplicitResumeSessionOverride(input: {
   adapterType?: string | null;
@@ -4275,6 +4283,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeRun = await db
       .select({
         id: heartbeatRuns.id,
+        harnessRevisionId: heartbeatRuns.harnessRevisionId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         resultJson: heartbeatRuns.resultJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
@@ -4314,6 +4323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     return {
       resumeFromRunId,
+      harnessRevisionId: resumeTaskSession?.harnessRevisionId ?? resumeRun.harnessRevisionId,
       taskKey: resumeTaskKey,
       issueId: readNonEmptyString(resumeContext.issueId),
       taskId: readNonEmptyString(resumeContext.taskId) ?? readNonEmptyString(resumeContext.issueId),
@@ -4537,6 +4547,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     taskKey: string;
     sessionParamsJson: Record<string, unknown> | null;
     sessionDisplayId: string | null;
+    harnessRevisionId: string | null;
     lastRunId: string | null;
     lastError: string | null;
   }) {
@@ -4552,6 +4563,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .set({
           sessionParamsJson: input.sessionParamsJson,
           sessionDisplayId: input.sessionDisplayId,
+          harnessRevisionId: input.harnessRevisionId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
           updatedAt: new Date(),
@@ -4570,6 +4582,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         taskKey: input.taskKey,
         sessionParamsJson: input.sessionParamsJson,
         sessionDisplayId: input.sessionDisplayId,
+        harnessRevisionId: input.harnessRevisionId,
         lastRunId: input.lastRunId,
         lastError: input.lastError,
       })
@@ -7971,22 +7984,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       configuredModel,
       taskSessionParams: taskSessionDecodedParams,
     });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
+    const currentHarnessRevisionId = harness?.revisionId ?? null;
+    const harnessChangedSinceTaskSession =
+      taskSession != null &&
+      shouldResetTaskSessionForHarnessRevision({
+        currentHarnessRevisionId,
+        taskSessionHarnessRevisionId: taskSession.harnessRevisionId,
+      });
+    const explicitResumeHarnessRevisionId = readNonEmptyString(context.resumeHarnessRevisionId);
+    const explicitHarnessRevisionMismatch =
+      Boolean(context.resumeSessionParams || context.resumeSessionDisplayId) &&
+      explicitResumeHarnessRevisionId !== currentHarnessRevisionId;
+    const resetTaskSession =
+      shouldResetTaskSessionForWake(context) ||
+      modelChangedSinceTaskSession ||
+      harnessChangedSinceTaskSession ||
+      explicitHarnessRevisionMismatch;
     const wakeSessionResetReason = describeSessionResetReason(context);
     const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
     const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
       ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
       : null;
-    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
+    const harnessSessionResetReason =
+      harnessChangedSinceTaskSession || explicitHarnessRevisionMismatch
+        ? `harness revision changed to "${currentHarnessRevisionId ?? "none"}"`
+        : null;
+    const sessionResetReason = [
+      modelSessionResetReason,
+      harnessSessionResetReason,
+      wakeSessionResetReason,
+    ]
       .filter((value): value is string => Boolean(value))
       .join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
-      agent.adapterType,
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
-    );
+    const explicitResumeSessionParams = explicitHarnessRevisionMismatch
+      ? null
+      : normalizeResumeParamsForAdapter(
+          agent.adapterType,
+          sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+        );
     const explicitResumeSessionDisplayId = truncateDisplayId(
-      readNonEmptyString(context.resumeSessionDisplayId) ??
+      (explicitHarnessRevisionMismatch ? null : readNonEmptyString(context.resumeSessionDisplayId)) ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
@@ -9406,6 +9444,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               taskKey,
               sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
               sessionDisplayId: nextSessionState.displayId,
+              harnessRevisionId: currentHarnessRevisionId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
             });
@@ -9489,6 +9528,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             taskKey,
             sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
             sessionDisplayId: previousSessionDisplayId,
+            harnessRevisionId: currentHarnessRevisionId,
             lastRunId: failedRun.id,
             lastError: message,
           });
@@ -10214,6 +10254,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
+      enrichedContextSnapshot.resumeHarnessRevisionId = explicitResumeSession.harnessRevisionId;
       enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
       enrichedContextSnapshot.resumeSessionParams = explicitResumeSession.sessionParams;
       if (!readNonEmptyString(enrichedContextSnapshot.issueId) && explicitResumeSession.issueId) {

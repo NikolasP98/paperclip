@@ -2,6 +2,7 @@ import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizz
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { agentHarnessRevisions } from "./agent_harnesses.js";
 
 export const agentTaskSessions = pgTable(
   "agent_task_sessions",
@@ -13,6 +14,9 @@ export const agentTaskSessions = pgTable(
     taskKey: text("task_key").notNull(),
     sessionParamsJson: jsonb("session_params_json").$type<Record<string, unknown>>(),
     sessionDisplayId: text("session_display_id"),
+    harnessRevisionId: uuid("harness_revision_id").references(() => agentHarnessRevisions.id, {
+      onDelete: "set null",
+    }),
     lastRunId: uuid("last_run_id").references(() => heartbeatRuns.id),
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -677,6 +677,22 @@ export function readPaperclipIssueWorkModeFromContext(value: unknown): string | 
   return wake?.issue?.workMode ?? null;
 }
 
+export function renderPaperclipHarnessPrompt(value: unknown): string {
+  const harness = parseObject(value);
+  const revisionId = asString(harness.revisionId, "").trim();
+  const guidance = asString(harness.guidance, "").trim().slice(0, 6_000);
+  if (!revisionId || !guidance) return "";
+  const roleKey = asString(harness.roleKey, "generic").trim() || "generic";
+  return [
+    "## Paperclip Living Harness",
+    "",
+    `- revision: ${revisionId}`,
+    `- role: ${roleKey}`,
+    "",
+    guidance,
+  ].join("\n");
+}
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: { resumedSession?: boolean } = {},

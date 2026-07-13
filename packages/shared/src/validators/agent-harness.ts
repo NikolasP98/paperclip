@@ -1,4 +1,48 @@
 import { z } from "zod";
+
+const HARNESS_GUIDANCE_SECRET =
+  /(?:sk|gh[opusr])_[a-z0-9_-]{16,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:authorization\s*:\s*bearer|(?:api[_ -]?key|token|password|secret)\s*[:=])\s*\S{8,}/i;
+
+export const harnessRoleGuidanceSchema = z
+  .string()
+  .trim()
+  .min(20)
+  .max(6_000)
+  .refine((value) => !HARNESS_GUIDANCE_SECRET.test(value), {
+    message: "Harness guidance must not contain credentials or secret-like values",
+  });
+
+export const harnessGuidanceChangeSchema = z
+  .object({
+    kind: z.literal("replace_role_guidance"),
+    baseRevisionId: z.string().uuid(),
+    before: harnessRoleGuidanceSchema,
+    after: harnessRoleGuidanceSchema,
+  })
+  .strict()
+  .refine((value) => value.before !== value.after, {
+    message: "Replacement guidance must differ from the base guidance",
+    path: ["after"],
+  });
+
+export const createHarnessGuidanceProposalSchema = z
+  .object({
+    signalId: z.string().uuid(),
+    rationale: z.string().trim().min(10).max(2_000),
+    change: harnessGuidanceChangeSchema,
+  })
+  .strict();
+
+export const rejectHarnessGuidanceProposalSchema = z
+  .object({ reason: z.string().trim().min(3).max(2_000) })
+  .strict();
+
+export const rollbackHarnessGuidanceProposalSchema = z
+  .object({ reason: z.string().trim().min(3).max(2_000).optional() })
+  .strict();
+
+export const emptyHarnessGuidanceDecisionSchema = z.object({}).strict();
+
 export const agentHarnessRoleKeySchema = z.enum([
   "issue-classifier",
   "spec-planner",

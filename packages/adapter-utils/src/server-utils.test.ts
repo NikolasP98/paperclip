@@ -12,6 +12,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
+  renderPaperclipHarnessPrompt,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -928,6 +929,21 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+  });
+});
+
+describe("renderPaperclipHarnessPrompt", () => {
+  it("renders a bounded revisioned guidance section", () => {
+    const prompt = renderPaperclipHarnessPrompt({
+      revisionId: "11111111-1111-4111-8111-111111111111",
+      roleKey: "implementer",
+      guidance: `Use focused regression tests. ${"x".repeat(7_000)}`,
+    });
+    expect(prompt).toContain("## Paperclip Living Harness");
+    expect(prompt).toContain("revision: 11111111-1111-4111-8111-111111111111");
+    expect(prompt).toContain("Use focused regression tests.");
+    expect(prompt.length).toBeLessThan(6_200);
+    expect(renderPaperclipHarnessPrompt({ guidance: "missing revision" })).toBe("");
   });
 });
 

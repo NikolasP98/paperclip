@@ -14,6 +14,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issueExecutionDecisions } from "./issue_execution_decisions.js";
 import { issues } from "./issues.js";
+import type { HarnessGuidanceChange } from "@paperclipai/shared";
 
 export const agentHarnessRevisions = pgTable(
   "agent_harness_revisions",
@@ -40,7 +41,7 @@ export const agentHarnessRevisions = pgTable(
       table.agentId,
       table.revisionNumber,
     ),
-    agentHashUq: uniqueIndex("agent_harness_revisions_agent_hash_uq").on(
+    agentHashIdx: index("agent_harness_revisions_agent_hash_idx").on(
       table.agentId,
       table.contentHash,
     ),
@@ -69,6 +70,7 @@ export const agentLearningSignals = pgTable(
       onDelete: "set null",
     }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    sourceKey: text("source_key"),
     signalType: text("signal_type").notNull(),
     outcome: text("outcome").notNull(),
     score: numeric("score", { mode: "number" }),
@@ -84,6 +86,11 @@ export const agentLearningSignals = pgTable(
       table.createdAt,
     ),
     decisionUq: uniqueIndex("agent_learning_signals_decision_uq").on(table.decisionId),
+    companyAgentSourceUq: uniqueIndex("agent_learning_signals_company_agent_source_uq").on(
+      table.companyId,
+      table.agentId,
+      table.sourceKey,
+    ),
   }),
 );
 
@@ -111,7 +118,7 @@ export const agentLearningProposals = pgTable(
     evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
     validationPlan: jsonb("validation_plan").$type<Record<string, unknown>>().notNull().default({}),
     proposedChanges: jsonb("proposed_changes")
-      .$type<Record<string, unknown>>()
+      .$type<HarnessGuidanceChange | Record<string, never>>()
       .notNull()
       .default({}),
     reviewedByAgentId: uuid("reviewed_by_agent_id").references(() => agents.id, {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { agentHarnessIdsQuerySchema, roleRoutingPolicySchema } from "./agent-harness.js";
+import {
+  agentHarnessIdsQuerySchema,
+  harnessGuidanceChangeSchema,
+  roleRoutingPolicySchema,
+} from "./agent-harness.js";
 describe("agent harness validators", () => {
   it("caps and deduplicates batch ids", () => {
     const id = "11111111-1111-4111-8111-111111111111";
@@ -30,5 +34,26 @@ describe("agent harness validators", () => {
         maxCostPerAcceptedOutcomeCents: 100,
       }).success,
     ).toBe(true);
+  });
+  it("accepts only bounded secret-free role guidance replacements", () => {
+    const valid = {
+      kind: "replace_role_guidance",
+      baseRevisionId: "11111111-1111-4111-8111-111111111111",
+      before: "Read the issue evidence and implement only the approved scope.",
+      after: "Read the issue evidence, add a regression test, and implement only the approved scope.",
+    };
+    expect(harnessGuidanceChangeSchema.parse(valid)).toEqual(valid);
+    expect(harnessGuidanceChangeSchema.safeParse({ ...valid, model: "gpt-5.4" }).success).toBe(
+      false,
+    );
+    expect(
+      harnessGuidanceChangeSchema.safeParse({
+        ...valid,
+        after: "Use API_KEY=sk_live_12345678901234567890 for the evaluator.",
+      }).success,
+    ).toBe(false);
+    expect(harnessGuidanceChangeSchema.safeParse({ ...valid, after: "too short" }).success).toBe(
+      false,
+    );
   });
 });

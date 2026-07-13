@@ -1,18 +1,26 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, max } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, max } from "drizzle-orm";
 import {
+  activityLog,
   agentHarnessRevisions,
   agentLearningProposals,
   agentLearningSignals,
   agents,
+  heartbeatRuns,
+  issues,
   type Db,
 } from "@paperclipai/db";
-import type {
-  AgentHarnessLearningPolicy,
-  AgentHarnessRoleKey,
-  AgentHarnessRuntimePolicy,
-  AgentHarnessSummary,
+import {
+  createHarnessGuidanceProposalSchema,
+  harnessGuidanceChangeSchema,
+  type AgentHarnessLearningPolicy,
+  type AgentHarnessProposalStatus,
+  type AgentHarnessRoleKey,
+  type AgentHarnessRuntimePolicy,
+  type AgentHarnessSummary,
+  type HarnessGuidanceChange,
 } from "@paperclipai/shared";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 const SECRET_KEY = /(secret|token|password|credential|api.?key|authorization|private.?key)/i;
 function sorted(value: unknown): unknown {
@@ -23,6 +31,9 @@ function sorted(value: unknown): unknown {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, child]) => [key, sorted(child)]),
   );
+}
+function sameHarnessValue(left: unknown, right: unknown) {
+  return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
 }
 export function harnessContentHash(snapshot: Record<string, unknown>) {
   return createHash("sha256")
@@ -332,12 +343,15 @@ export function harnessPolicyPreset(agent: {
 
 function summary(row: typeof agentHarnessRevisions.$inferSelect): AgentHarnessSummary {
   const snapshot = row.snapshot;
+  const roleKey = snapshot.roleKey as AgentHarnessRoleKey;
   return {
     agentId: row.agentId,
     revisionId: row.id,
     revisionNumber: row.revisionNumber,
     contentHash: row.contentHash,
-    roleKey: snapshot.roleKey as AgentHarnessRoleKey,
+    roleKey,
+    guidance:
+      typeof snapshot.guidance === "string" ? snapshot.guidance : guidanceForRole(roleKey),
     runtime: snapshot.runtime as AgentHarnessRuntimePolicy,
     learning: snapshot.learning as AgentHarnessLearningPolicy,
     performance: row.performanceSnapshot,
@@ -345,59 +359,87 @@ function summary(row: typeof agentHarnessRevisions.$inferSelect): AgentHarnessSu
   };
 }
 
+function revisionGuidance(revision: typeof agentHarnessRevisions.$inferSelect) {
+  const roleKey = revision.snapshot.roleKey as AgentHarnessRoleKey;
+  return typeof revision.snapshot.guidance === "string"
+    ? revision.snapshot.guidance
+    : guidanceForRole(roleKey);
+}
+
+type HarnessProposalActor =
+  | { type: "user"; userId: string }
+  | { type: "agent"; agentId: string };
+
 export function agentHarnessService(db: Db) {
   async function ensureRevision(agentId: string, companyId?: string) {
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(and(eq(agents.id, agentId), ...(companyId ? [eq(agents.companyId, companyId)] : [])))
-      .limit(1);
-    if (!agent) return null;
-    const policy = harnessPolicyPreset(agent);
-    const snapshot = sorted({
-      ...policy,
-      observed: observedHarnessConfig(agent),
-      capabilities: agent.capabilities,
-    }) as Record<string, unknown>;
-    const contentHash = harnessContentHash(snapshot);
-    const [same] = await db
-      .select()
-      .from(agentHarnessRevisions)
-      .where(
-        and(
-          eq(agentHarnessRevisions.agentId, agent.id),
-          eq(agentHarnessRevisions.contentHash, contentHash),
-        ),
-      )
-      .limit(1);
-    if (same) {
-      if (agent.currentHarnessRevisionId !== same.id)
-        await db
-          .update(agents)
-          .set({ currentHarnessRevisionId: same.id })
-          .where(eq(agents.id, agent.id));
-      return same;
-    }
-    const [counter] = await db
-      .select({ value: max(agentHarnessRevisions.revisionNumber) })
-      .from(agentHarnessRevisions)
-      .where(eq(agentHarnessRevisions.agentId, agent.id));
-    const [created] = await db
-      .insert(agentHarnessRevisions)
-      .values({
-        companyId: agent.companyId,
-        agentId: agent.id,
-        revisionNumber: (counter?.value ?? 0) + 1,
-        contentHash,
-        snapshot,
-      })
-      .returning();
-    await db
-      .update(agents)
-      .set({ currentHarnessRevisionId: created.id })
-      .where(eq(agents.id, agent.id));
-    return created;
+    return db.transaction(async (tx) => {
+      const agent = await tx
+        .select()
+        .from(agents)
+        .where(
+          and(
+            eq(agents.id, agentId),
+            ...(companyId ? [eq(agents.companyId, companyId)] : []),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!agent) return null;
+
+      const current = agent.currentHarnessRevisionId
+        ? await tx
+            .select()
+            .from(agentHarnessRevisions)
+            .where(
+              and(
+                eq(agentHarnessRevisions.id, agent.currentHarnessRevisionId),
+                eq(agentHarnessRevisions.agentId, agent.id),
+                eq(agentHarnessRevisions.companyId, agent.companyId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const policy = harnessPolicyPreset(agent);
+      const snapshot = sorted({
+        ...policy,
+        guidance: current ? revisionGuidance(current) : guidanceForRole(policy.roleKey),
+        observed: observedHarnessConfig(agent),
+        capabilities: agent.capabilities,
+      }) as Record<string, unknown>;
+      const contentHash = harnessContentHash(snapshot);
+      if (current?.contentHash === contentHash) return current;
+
+      const counter = await tx
+        .select({ value: max(agentHarnessRevisions.revisionNumber) })
+        .from(agentHarnessRevisions)
+        .where(eq(agentHarnessRevisions.agentId, agent.id))
+        .then((rows) => rows[0]?.value ?? 0);
+      const created = await tx
+        .insert(agentHarnessRevisions)
+        .values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          revisionNumber: counter + 1,
+          contentHash,
+          snapshot,
+          source: current ? "observed_config_change" : "runtime_snapshot",
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      const pointerCondition = agent.currentHarnessRevisionId
+        ? eq(agents.currentHarnessRevisionId, agent.currentHarnessRevisionId)
+        : isNull(agents.currentHarnessRevisionId);
+      const updated = await tx
+        .update(agents)
+        .set({ currentHarnessRevisionId: created.id, updatedAt: new Date() })
+        .where(and(eq(agents.id, agent.id), pointerCondition))
+        .returning({ id: agents.id });
+      if (updated.length !== 1) throw conflict("Harness revision changed during reconciliation");
+      return created;
+    });
   }
+
   async function compactContext(agentId: string, companyId: string) {
     const revision = await ensureRevision(agentId, companyId);
     if (!revision) return null;
@@ -433,7 +475,7 @@ export function agentHarnessService(db: Db) {
       revisionId: revision.id,
       contentHash: revision.contentHash,
       roleKey,
-      guidance: guidanceForRole(roleKey),
+      guidance: revisionGuidance(revision),
       learning,
       performance: revision.performanceSnapshot,
       recentFeedback,
@@ -455,10 +497,527 @@ export function agentHarnessService(db: Db) {
     }
     return result;
   }
+
+  async function authorizeProposalActor(
+    store: Db,
+    actor: HarnessProposalActor,
+    targetAgentId: string,
+    companyId: string,
+  ) {
+    if (actor.type === "user") return;
+    if (actor.agentId === targetAgentId) {
+      throw forbidden("Workers cannot propose changes to their own harness");
+    }
+    const reviewer = await store
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, actor.agentId), eq(agents.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !reviewer ||
+      (reviewer.adapterType !== "hermes_local" && roleKeyForAgent(reviewer) !== "learning-reviewer")
+    ) {
+      throw forbidden("Only a board user or learning-reviewer/Hermes agent may propose guidance");
+    }
+  }
+
+  async function writeActivity(
+    store: Db,
+    input: {
+      companyId: string;
+      actorType: "agent" | "user";
+      actorId: string;
+      action: string;
+      proposalId: string;
+      agentId: string;
+      details: Record<string, unknown>;
+    },
+  ) {
+    await store.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      action: input.action,
+      entityType: "agent_learning_proposal",
+      entityId: input.proposalId,
+      agentId: input.agentId,
+      details: input.details,
+    });
+  }
+
+  async function createGuidanceProposal(input: {
+    companyId: string;
+    agentId: string;
+    signalId: string;
+    rationale: string;
+    change: HarnessGuidanceChange;
+    actor: HarnessProposalActor;
+  }) {
+    const parsedInput = createHarnessGuidanceProposalSchema.parse({
+      signalId: input.signalId,
+      rationale: input.rationale,
+      change: input.change,
+    });
+    const change = parsedInput.change;
+    return db.transaction(async (tx) => {
+      const store = tx as unknown as Db;
+      const target = await tx
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!target) throw notFound("Agent not found");
+      await authorizeProposalActor(store, input.actor, input.agentId, input.companyId);
+
+      const signal = await tx
+        .select()
+        .from(agentLearningSignals)
+        .where(
+          and(
+            eq(agentLearningSignals.id, parsedInput.signalId),
+            eq(agentLearningSignals.companyId, input.companyId),
+            eq(agentLearningSignals.agentId, input.agentId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!signal?.harnessRevisionId) {
+        throw unprocessable("Proposal requires an attributed learning signal with a revision");
+      }
+      if (signal.harnessRevisionId !== change.baseRevisionId) {
+        throw unprocessable("Proposal base revision must match the attributed signal revision");
+      }
+      const base = await tx
+        .select()
+        .from(agentHarnessRevisions)
+        .where(
+          and(
+            eq(agentHarnessRevisions.id, change.baseRevisionId),
+            eq(agentHarnessRevisions.companyId, input.companyId),
+            eq(agentHarnessRevisions.agentId, input.agentId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!base) throw unprocessable("Base harness revision does not belong to the target agent");
+      if (revisionGuidance(base) !== change.before) {
+        throw conflict("Proposal before-guidance does not match the base revision");
+      }
+
+      const existing = await tx
+        .select()
+        .from(agentLearningProposals)
+        .where(eq(agentLearningProposals.signalId, signal.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (existing && existing.status !== "review_needed") {
+        if (
+          existing.status === "proposed" &&
+          existing.rationale === parsedInput.rationale &&
+          harnessGuidanceChangeSchema.safeParse(existing.proposedChanges).success &&
+          harnessContentHash(existing.proposedChanges as unknown as Record<string, unknown>) ===
+            harnessContentHash(change as unknown as Record<string, unknown>)
+        ) {
+          return existing;
+        }
+        throw conflict("The attributed signal already has a governed proposal");
+      }
+
+      const actorType = input.actor.type;
+      const actorId = input.actor.type === "user" ? input.actor.userId : input.actor.agentId;
+      const values = {
+        companyId: input.companyId,
+        agentId: input.agentId,
+        harnessRevisionId: base.id,
+        signalId: signal.id,
+        status: "proposed",
+        proposalType: "role_guidance",
+        rationale: parsedInput.rationale,
+        riskLevel: "medium",
+        confidence: 50,
+        evidence: {
+          signalId: signal.id,
+          signalType: signal.signalType,
+          outcome: signal.outcome,
+          score: signal.score,
+          maxScore: signal.maxScore,
+        },
+        validationPlan: {
+          guidanceOnly: true,
+          requiresHumanApproval: true,
+          automaticPromotion: false,
+        },
+        proposedChanges: change,
+        reviewedByAgentId: null,
+        reviewedByUserId: null,
+        reviewedAt: null,
+        promotedByAgentId: null,
+        promotedByUserId: null,
+        promotedAt: null,
+        resolvedAt: null,
+        resolution: null,
+        updatedAt: new Date(),
+      } as const;
+      const proposal = existing
+        ? await tx
+            .update(agentLearningProposals)
+            .set(values)
+            .where(eq(agentLearningProposals.id, existing.id))
+            .returning()
+            .then((rows) => rows[0]!)
+        : await tx
+            .insert(agentLearningProposals)
+            .values(values)
+            .returning()
+            .then((rows) => rows[0]!);
+      await writeActivity(store, {
+        companyId: input.companyId,
+        actorType,
+        actorId,
+        action: "agent_harness.guidance_proposed",
+        proposalId: proposal.id,
+        agentId: input.agentId,
+        details: { signalId: signal.id, baseRevisionId: base.id },
+      });
+      return proposal;
+    });
+  }
+
+  async function lockProposal(
+    store: Db,
+    proposalId: string,
+    agentId: string,
+    companyId: string,
+  ) {
+    const proposal = await store
+      .select()
+      .from(agentLearningProposals)
+      .where(
+        and(
+          eq(agentLearningProposals.id, proposalId),
+          eq(agentLearningProposals.agentId, agentId),
+          eq(agentLearningProposals.companyId, companyId),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!proposal) throw notFound("Harness proposal not found");
+    return proposal;
+  }
+
+  async function reviewProposal(input: {
+    companyId: string;
+    agentId: string;
+    proposalId: string;
+    userId: string;
+    decision: "approve" | "reject";
+    reason?: string;
+  }) {
+    return db.transaction(async (tx) => {
+      const store = tx as unknown as Db;
+      const target = await tx
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!target) throw notFound("Agent not found");
+      const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
+      const desiredStatus: AgentHarnessProposalStatus =
+        input.decision === "approve" ? "approved" : "rejected";
+      if (proposal.status === desiredStatus) return proposal;
+      if (proposal.status !== "proposed") {
+        throw conflict(
+          `Only proposed guidance can be ${input.decision === "approve" ? "approved" : "rejected"}`,
+        );
+      }
+      if (proposal.harnessRevisionId) {
+        const base = await tx
+          .select({ id: agentHarnessRevisions.id })
+          .from(agentHarnessRevisions)
+          .where(eq(agentHarnessRevisions.id, proposal.harnessRevisionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!base) throw conflict("Proposal base revision no longer exists");
+      }
+      const now = new Date();
+      const updated = await tx
+        .update(agentLearningProposals)
+        .set({
+          status: desiredStatus,
+          reviewedByAgentId: null,
+          reviewedByUserId: input.userId,
+          reviewedAt: now,
+          resolvedAt: input.decision === "reject" ? now : null,
+          resolution:
+            input.decision === "reject" ? { decision: "rejected", reason: input.reason } : null,
+          updatedAt: now,
+        })
+        .where(eq(agentLearningProposals.id, proposal.id))
+        .returning()
+        .then((rows) => rows[0]!);
+      await writeActivity(store, {
+        companyId: input.companyId,
+        actorType: "user",
+        actorId: input.userId,
+        action: `agent_harness.guidance_${input.decision === "approve" ? "approved" : "rejected"}`,
+        proposalId: proposal.id,
+        agentId: input.agentId,
+        details: { baseRevisionId: proposal.harnessRevisionId, reason: input.reason },
+      });
+      return updated;
+    });
+  }
+
+  async function promoteProposal(input: {
+    companyId: string;
+    agentId: string;
+    proposalId: string;
+    userId: string;
+  }) {
+    return db.transaction(async (tx) => {
+      const store = tx as unknown as Db;
+      const target = await tx
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!target) throw notFound("Agent not found");
+      const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
+      if (proposal.status === "promoted") return proposal;
+      if (proposal.status !== "approved") throw conflict("Only approved guidance can be promoted");
+      const parsed = harnessGuidanceChangeSchema.safeParse(proposal.proposedChanges);
+      if (!parsed.success || proposal.harnessRevisionId !== parsed.data.baseRevisionId) {
+        throw conflict("Proposal does not contain a valid guidance-only change");
+      }
+      const change = parsed.data;
+      const base = await tx
+        .select()
+        .from(agentHarnessRevisions)
+        .where(
+          and(
+            eq(agentHarnessRevisions.id, change.baseRevisionId),
+            eq(agentHarnessRevisions.agentId, input.agentId),
+            eq(agentHarnessRevisions.companyId, input.companyId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!base) throw conflict("Proposal base revision no longer exists");
+      if (target.currentHarnessRevisionId !== base.id) {
+        const superseded = await tx
+          .update(agentLearningProposals)
+          .set({
+            status: "superseded",
+            resolvedAt: new Date(),
+            resolution: {
+              decision: "superseded",
+              reason: "stale_base_revision",
+              currentRevisionId: target.currentHarnessRevisionId,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(agentLearningProposals.id, proposal.id))
+          .returning()
+          .then((rows) => rows[0]!);
+        await writeActivity(store, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.userId,
+          action: "agent_harness.guidance_superseded",
+          proposalId: proposal.id,
+          agentId: input.agentId,
+          details: { baseRevisionId: base.id, currentRevisionId: target.currentHarnessRevisionId },
+        });
+        return superseded;
+      }
+      if (revisionGuidance(base) !== change.before) {
+        throw conflict("Proposal before-guidance no longer matches its base revision");
+      }
+      const snapshot = sorted({ ...base.snapshot, guidance: change.after }) as Record<
+        string,
+        unknown
+      >;
+      const counter = await tx
+        .select({ value: max(agentHarnessRevisions.revisionNumber) })
+        .from(agentHarnessRevisions)
+        .where(eq(agentHarnessRevisions.agentId, input.agentId))
+        .then((rows) => rows[0]?.value ?? 0);
+      const revision = await tx
+        .insert(agentHarnessRevisions)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          revisionNumber: counter + 1,
+          contentHash: harnessContentHash(snapshot),
+          snapshot,
+          performanceSnapshot: base.performanceSnapshot,
+          source: `guidance_proposal:${proposal.id}`,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      const pointer = await tx
+        .update(agents)
+        .set({ currentHarnessRevisionId: revision.id, updatedAt: new Date() })
+        .where(
+          and(eq(agents.id, input.agentId), eq(agents.currentHarnessRevisionId, base.id)),
+        )
+        .returning({ id: agents.id });
+      if (pointer.length !== 1) throw conflict("Harness revision changed during promotion");
+      const now = new Date();
+      const promoted = await tx
+        .update(agentLearningProposals)
+        .set({
+          status: "promoted",
+          promotedByAgentId: null,
+          promotedByUserId: input.userId,
+          promotedAt: now,
+          resolvedAt: now,
+          resolution: { decision: "promoted", promotedRevisionId: revision.id },
+          updatedAt: now,
+        })
+        .where(eq(agentLearningProposals.id, proposal.id))
+        .returning()
+        .then((rows) => rows[0]!);
+      await writeActivity(store, {
+        companyId: input.companyId,
+        actorType: "user",
+        actorId: input.userId,
+        action: "agent_harness.guidance_promoted",
+        proposalId: proposal.id,
+        agentId: input.agentId,
+        details: { baseRevisionId: base.id, promotedRevisionId: revision.id },
+      });
+      return promoted;
+    });
+  }
+
+  async function rollbackProposal(input: {
+    companyId: string;
+    agentId: string;
+    proposalId: string;
+    userId: string;
+    reason?: string;
+  }) {
+    return db.transaction(async (tx) => {
+      const store = tx as unknown as Db;
+      const target = await tx
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!target) throw notFound("Agent not found");
+      const proposal = await lockProposal(store, input.proposalId, input.agentId, input.companyId);
+      if (proposal.status === "rolled_back") return proposal;
+      if (proposal.status !== "promoted") throw conflict("Only promoted guidance can be rolled back");
+      const parsed = harnessGuidanceChangeSchema.safeParse(proposal.proposedChanges);
+      if (!parsed.success) throw conflict("Proposal does not contain a valid guidance-only change");
+      if (!target.currentHarnessRevisionId) throw conflict("Agent has no current harness revision");
+      const current = await tx
+        .select()
+        .from(agentHarnessRevisions)
+        .where(
+          and(
+            eq(agentHarnessRevisions.id, target.currentHarnessRevisionId),
+            eq(agentHarnessRevisions.agentId, input.agentId),
+            eq(agentHarnessRevisions.companyId, input.companyId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!current) throw conflict("Current harness revision no longer exists");
+      if (revisionGuidance(current) !== parsed.data.after) {
+        throw conflict("Current guidance no longer matches the promoted proposal");
+      }
+      const snapshot = sorted({ ...current.snapshot, guidance: parsed.data.before }) as Record<
+        string,
+        unknown
+      >;
+      const counter = await tx
+        .select({ value: max(agentHarnessRevisions.revisionNumber) })
+        .from(agentHarnessRevisions)
+        .where(eq(agentHarnessRevisions.agentId, input.agentId))
+        .then((rows) => rows[0]?.value ?? 0);
+      const revision = await tx
+        .insert(agentHarnessRevisions)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          revisionNumber: counter + 1,
+          contentHash: harnessContentHash(snapshot),
+          snapshot,
+          performanceSnapshot: current.performanceSnapshot,
+          source: `guidance_rollback:${proposal.id}`,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      const pointer = await tx
+        .update(agents)
+        .set({ currentHarnessRevisionId: revision.id, updatedAt: new Date() })
+        .where(
+          and(
+            eq(agents.id, input.agentId),
+            eq(agents.currentHarnessRevisionId, current.id),
+          ),
+        )
+        .returning({ id: agents.id });
+      if (pointer.length !== 1) throw conflict("Harness revision changed during rollback");
+      const priorResolution =
+        proposal.resolution && typeof proposal.resolution === "object" ? proposal.resolution : {};
+      const now = new Date();
+      const rolledBack = await tx
+        .update(agentLearningProposals)
+        .set({
+          status: "rolled_back",
+          resolvedAt: now,
+          resolution: {
+            ...priorResolution,
+            decision: "rolled_back",
+            rollbackRevisionId: revision.id,
+            rollbackReason: input.reason,
+            rolledBackByUserId: input.userId,
+          },
+          updatedAt: now,
+        })
+        .where(eq(agentLearningProposals.id, proposal.id))
+        .returning()
+        .then((rows) => rows[0]!);
+      await writeActivity(store, {
+        companyId: input.companyId,
+        actorType: "user",
+        actorId: input.userId,
+        action: "agent_harness.guidance_rolled_back",
+        proposalId: proposal.id,
+        agentId: input.agentId,
+        details: { fromRevisionId: current.id, rollbackRevisionId: revision.id },
+      });
+      return rolledBack;
+    });
+  }
+
   return {
     ensureRevision,
     compactContext,
     currentSummaries,
+    createGuidanceProposal,
+    approveGuidanceProposal: (input: {
+      companyId: string;
+      agentId: string;
+      proposalId: string;
+      userId: string;
+    }) => reviewProposal({ ...input, decision: "approve" }),
+    rejectGuidanceProposal: (input: {
+      companyId: string;
+      agentId: string;
+      proposalId: string;
+      userId: string;
+      reason: string;
+    }) => reviewProposal({ ...input, decision: "reject" }),
+    promoteGuidanceProposal: promoteProposal,
+    rollbackGuidanceProposal: rollbackProposal,
     async current(agentId: string, companyId: string) {
       const row = await ensureRevision(agentId, companyId);
       return row ? summary(row) : null;
@@ -517,6 +1076,189 @@ export function deriveHarnessPerformance(
   };
 }
 
+const LEARNING_SIGNAL_SOURCE_KEY = /^[a-z0-9][a-z0-9._:/-]*$/i;
+const LEARNING_SIGNAL_KIND = /^[a-z][a-z0-9_.:-]*$/i;
+
+export async function captureAttributedHarnessLearningSignal(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    sourceKey: string;
+    signalType: string;
+    outcome: string;
+    body: string;
+    score?: number | null;
+    maxScore?: number | null;
+    harnessRevisionId?: string | null;
+    runId?: string | null;
+    issueId?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  const sourceKey = input.sourceKey.trim();
+  const signalType = input.signalType.trim();
+  const outcome = input.outcome.trim();
+  const body = input.body.trim();
+  if (sourceKey.length < 1 || sourceKey.length > 256 || !LEARNING_SIGNAL_SOURCE_KEY.test(sourceKey)) {
+    throw unprocessable("Learning signal sourceKey must be 1-256 URL-safe characters");
+  }
+  if (signalType.length < 1 || signalType.length > 64 || !LEARNING_SIGNAL_KIND.test(signalType)) {
+    throw unprocessable("Learning signal type must be 1-64 bounded identifier characters");
+  }
+  if (outcome.length < 1 || outcome.length > 64 || !LEARNING_SIGNAL_KIND.test(outcome)) {
+    throw unprocessable("Learning signal outcome must be 1-64 bounded identifier characters");
+  }
+  if (body.length < 1 || body.length > 4_000) {
+    throw unprocessable("Learning signal body must be 1-4000 characters");
+  }
+  const score = input.score ?? null;
+  const maxScore = input.maxScore ?? null;
+  if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) {
+    throw unprocessable("Learning signal score must be between 0 and 100");
+  }
+  if (maxScore != null && (!Number.isFinite(maxScore) || maxScore <= 0 || maxScore > 100)) {
+    throw unprocessable("Learning signal maxScore must be greater than 0 and at most 100");
+  }
+  if (score != null && maxScore != null && score > maxScore) {
+    throw unprocessable("Learning signal score cannot exceed maxScore");
+  }
+  const redactedMetadata = redactHarnessValue(input.metadata ?? {}) as Record<string, unknown>;
+  if (JSON.stringify(redactedMetadata).length > 8_000) {
+    throw unprocessable("Learning signal metadata must be at most 8000 serialized characters");
+  }
+
+  const service = agentHarnessService(db);
+  const ensured = input.harnessRevisionId
+    ? null
+    : await service.ensureRevision(input.agentId, input.companyId);
+  const requestedRevisionId = input.harnessRevisionId ?? ensured?.id ?? null;
+  if (!requestedRevisionId) throw notFound("Agent harness revision not found");
+
+  return db.transaction(async (tx) => {
+    const target = await tx
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!target) throw notFound("Agent not found");
+    const revision = await tx
+      .select()
+      .from(agentHarnessRevisions)
+      .where(
+        and(
+          eq(agentHarnessRevisions.id, requestedRevisionId),
+          eq(agentHarnessRevisions.agentId, input.agentId),
+          eq(agentHarnessRevisions.companyId, input.companyId),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!revision) throw unprocessable("Harness revision is not attributed to the target agent");
+    if (input.issueId) {
+      const issue = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw unprocessable("Learning signal issue is not in the target company");
+    }
+    if (input.runId) {
+      const run = await tx
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!run) throw unprocessable("Learning signal run is not in the target company");
+    }
+
+    const existing = await tx
+      .select()
+      .from(agentLearningSignals)
+      .where(
+        and(
+          eq(agentLearningSignals.companyId, input.companyId),
+          eq(agentLearningSignals.agentId, input.agentId),
+          eq(agentLearningSignals.sourceKey, sourceKey),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    const desired = {
+      harnessRevisionId: revision.id,
+      issueId: input.issueId ?? null,
+      runId: input.runId ?? null,
+      sourceKey,
+      signalType,
+      outcome,
+      score,
+      maxScore,
+      body,
+      metadata: redactedMetadata,
+    };
+    if (existing) {
+      const replay = Object.entries(desired).every(([key, value]) =>
+        sameHarnessValue(existing[key as keyof typeof existing], value),
+      );
+      if (!replay) throw conflict("Learning signal sourceKey was replayed with different evidence");
+      return existing;
+    }
+
+    const signal = await tx
+      .insert(agentLearningSignals)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        ...desired,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const learning = revision.snapshot.learning as AgentHarnessLearningPolicy;
+    const normalizedScore = score != null && maxScore ? (score / maxScore) * 10 : score;
+    const requestsReview =
+      ["changes_requested", "failed", "rejected"].includes(outcome) ||
+      (normalizedScore != null && normalizedScore < learning.proposalScoreThreshold);
+    if (requestsReview) {
+      await tx
+        .insert(agentLearningProposals)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          harnessRevisionId: revision.id,
+          signalId: signal.id,
+          status: "review_needed",
+          proposalType: "review_needed",
+          rationale: "An attributed pipeline signal requires human guidance review.",
+          riskLevel: "medium",
+          confidence: 50,
+          evidence: { sourceKey, outcome, score, maxScore },
+          validationPlan: {
+            required: ["human-authored guidance proposal", "human approval"],
+            noAutomaticMutation: true,
+          },
+          proposedChanges: {},
+        })
+        .onConflictDoNothing();
+    }
+    const allSignals = await tx
+      .select({ score: agentLearningSignals.score, outcome: agentLearningSignals.outcome })
+      .from(agentLearningSignals)
+      .where(
+        and(
+          eq(agentLearningSignals.companyId, input.companyId),
+          eq(agentLearningSignals.agentId, input.agentId),
+          eq(agentLearningSignals.harnessRevisionId, revision.id),
+        ),
+      );
+    await tx
+      .update(agentHarnessRevisions)
+      .set({ performanceSnapshot: deriveHarnessPerformance(allSignals) })
+      .where(eq(agentHarnessRevisions.id, revision.id));
+    return signal;
+  });
+}
+
 export async function captureDecisionLearningSignal(
   db: Db,
   input: {
@@ -564,7 +1306,8 @@ export async function captureDecisionLearningSignal(
         agentId: input.workerAgentId,
         harnessRevisionId: revision.id,
         signalId: signal.id,
-        proposalType: "harness_improvement",
+        status: "review_needed",
+        proposalType: "review_needed",
         rationale:
           input.outcome === "changes_requested"
             ? "A governed stage requested changes."
@@ -578,13 +1321,12 @@ export async function captureDecisionLearningSignal(
           score: input.score,
         },
         validationPlan: {
-          required: ["focused regression test", "independent evaluator score at or above floor"],
+          required: ["human-authored guidance proposal", "human approval"],
           noAutomaticMutation: true,
         },
-        proposedChanges: {
-          targets: ["instructions", "skills", "routing"],
-          action: "review_required",
-        },
+        // A signal can request review, but it must never invent guidance or a
+        // broader model/tool/skill/runtime/permission mutation.
+        proposedChanges: {},
       })
       .onConflictDoNothing();
   const allSignals = await service.signals(input.workerAgentId, input.companyId);

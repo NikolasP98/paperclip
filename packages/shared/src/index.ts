@@ -1480,7 +1480,17 @@ export {
   type UpdatePortfolio,
 } from "./validators/portfolio.js";
 
-export { agentHarnessRoleKeySchema, agentHarnessIdsQuerySchema, roleRoutingPolicySchema } from "./validators/agent-harness.js";
+export {
+  agentHarnessRoleKeySchema,
+  agentHarnessIdsQuerySchema,
+  createHarnessGuidanceProposalSchema,
+  emptyHarnessGuidanceDecisionSchema,
+  harnessGuidanceChangeSchema,
+  harnessRoleGuidanceSchema,
+  rejectHarnessGuidanceProposalSchema,
+  rollbackHarnessGuidanceProposalSchema,
+  roleRoutingPolicySchema,
+} from "./validators/agent-harness.js";
 
 export {
   adapterRegistryEntrySchema,

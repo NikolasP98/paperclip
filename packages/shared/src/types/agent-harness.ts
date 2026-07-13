@@ -7,6 +7,20 @@ export type AgentHarnessRoleKey =
   | "portfolio-monitor"
   | "learning-reviewer"
   | "generic";
+export type AgentHarnessProposalStatus =
+  | "review_needed"
+  | "proposed"
+  | "approved"
+  | "rejected"
+  | "promoted"
+  | "superseded"
+  | "rolled_back";
+export interface HarnessGuidanceChange {
+  kind: "replace_role_guidance";
+  baseRevisionId: string;
+  before: string;
+  after: string;
+}
 export interface AgentHarnessRuntimeSelection {
   runtimeKind: string;
   adapterType: string | null;
@@ -44,6 +58,7 @@ export interface AgentHarnessSummary {
   revisionNumber: number;
   contentHash: string;
   roleKey: AgentHarnessRoleKey;
+  guidance: string;
   runtime: AgentHarnessRuntimePolicy;
   learning: AgentHarnessLearningPolicy;
   performance: Record<string, unknown>;
@@ -62,6 +77,7 @@ export interface AgentLearningSignal {
   issueId: string | null;
   decisionId: string | null;
   runId: string | null;
+  sourceKey: string | null;
   signalType: string;
   outcome: string;
   score: number | null;
@@ -76,14 +92,14 @@ export interface AgentLearningProposal {
   agentId: string;
   harnessRevisionId: string | null;
   signalId: string;
-  status: string;
-  proposalType: string;
+  status: AgentHarnessProposalStatus;
+  proposalType: "role_guidance" | "review_needed";
   rationale: string;
   riskLevel: string;
   confidence: number;
   evidence: Record<string, unknown>;
   validationPlan: Record<string, unknown>;
-  proposedChanges: Record<string, unknown>;
+  proposedChanges: HarnessGuidanceChange | Record<string, never>;
   reviewedByAgentId: string | null;
   reviewedByUserId: string | null;
   reviewedAt: Date | string | null;

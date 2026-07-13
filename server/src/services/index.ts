@@ -63,7 +63,11 @@ export type {
 } from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
-export { agentHarnessService, captureDecisionLearningSignal } from "./agent-harness.js";
+export {
+  agentHarnessService,
+  captureAttributedHarnessLearningSignal,
+  captureDecisionLearningSignal,
+} from "./agent-harness.js";
 export { issuePipelineOrchestrator } from "./issue-pipeline-orchestrator.js";
 export { issuePipelineOrchestratorRepository } from "./issue-pipeline-repository.js";
 export { issuePipelineStageTraversalService } from "./issue-pipeline-stage-traversal.js";

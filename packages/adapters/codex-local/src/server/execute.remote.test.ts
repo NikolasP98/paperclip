@@ -119,6 +119,11 @@ describe("codex remote execution", () => {
         },
       },
       context: {
+        paperclipHarness: {
+          revisionId: "22222222-2222-4222-8222-222222222222",
+          roleKey: "evaluator",
+          guidance: "Use the promoted Codex harness guidance for this evaluation.",
+        },
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -173,9 +178,11 @@ describe("codex remote execution", () => {
 
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, string, string[], { env: Record<string, string>; stdin?: string; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[2]).not.toContain("--skip-git-repo-check");
+    expect(call?.[3].stdin).toContain("## Paperclip Living Harness");
+    expect(call?.[3].stdin).toContain("Use the promoted Codex harness guidance for this evaluation.");
     expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();

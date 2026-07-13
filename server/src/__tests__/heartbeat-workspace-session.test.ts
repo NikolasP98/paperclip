@@ -22,6 +22,7 @@ import {
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
+  shouldResetTaskSessionForHarnessRevision,
   stripConfiguredModelFromSessionParams,
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
@@ -982,6 +983,32 @@ describe("shouldResetTaskSessionForModelChange", () => {
       shouldResetTaskSessionForModelChange({
         configuredModel: "gpt-5.4-mini",
         taskSessionParams: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldResetTaskSessionForHarnessRevision", () => {
+  it("rejects legacy and differently pinned task sessions", () => {
+    expect(
+      shouldResetTaskSessionForHarnessRevision({
+        currentHarnessRevisionId: "revision-2",
+        taskSessionHarnessRevisionId: "revision-1",
+      }),
+    ).toBe(true);
+    expect(
+      shouldResetTaskSessionForHarnessRevision({
+        currentHarnessRevisionId: "revision-2",
+        taskSessionHarnessRevisionId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps sessions pinned to the active revision", () => {
+    expect(
+      shouldResetTaskSessionForHarnessRevision({
+        currentHarnessRevisionId: "revision-2",
+        taskSessionHarnessRevisionId: "revision-2",
       }),
     ).toBe(false);
   });
