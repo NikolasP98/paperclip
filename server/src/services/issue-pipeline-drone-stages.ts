@@ -210,6 +210,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+export function hasValidPipelineDroneStageContext(contextSnapshot: unknown): boolean {
+  return pipelineDroneContextSchema.safeParse(asRecord(contextSnapshot).pipelineDroneStage).success;
+}
+
 function truncate(value: string | null | undefined, max: number): string {
   return Array.from(value ?? '')
     .slice(0, max)

@@ -62,6 +62,7 @@ import {
 } from "./github-stage-task-intake.js";
 import {
   finalizePipelineDroneHeartbeat,
+  hasValidPipelineDroneStageContext,
   reconcilePipelineDroneRuns,
 } from "./issue-pipeline-drone-stages.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -10039,6 +10040,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           run: newRun,
           reopenedActivity,
         };
+      }
+
+      // Pipeline Drone terminal state has a dedicated, idempotent finalizer.
+      // This transaction still owns execution/checkout lock release and any
+      // pre-existing deferred wake, but must not race that finalizer by adding
+      // generic assignment/continuation recovery for the stage task.
+      if (hasValidPipelineDroneStageContext(run.contextSnapshot)) {
+        return { kind: "released" as const };
       }
 
       const issueNeedsImmediateRecovery =
