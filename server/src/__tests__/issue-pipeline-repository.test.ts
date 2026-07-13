@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import {
   agents,
+  agentLearningSignals,
+  agentTaskSessions,
   companies,
   createDb,
+  heartbeatRuns,
   issuePipelineEvents,
   issuePipelineRuns,
   issueRelations,
@@ -19,6 +22,8 @@ import type { IssuePipelineSnapshot } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issuePipelineOrchestrator } from "../services/issue-pipeline-orchestrator.js";
 import { issuePipelineOrchestratorRepository } from "../services/issue-pipeline-repository.js";
+import { issuePipelineStageTraversalService } from "../services/issue-pipeline-stage-traversal.js";
+import { agentHarnessService } from "../services/agent-harness.js";
 import { issuePipelineRunRoutes } from "../routes/issue-pipeline-runs.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
@@ -400,5 +405,154 @@ describeDb("issue pipeline repository", () => {
     expect(
       (await request(denied).get(`/api/issue-pipeline-runs/${started.run.id}`)).status,
     ).toBe(403);
+  });
+
+  it("persists one worker-attributed learning signal from task-session heartbeat evidence", async () => {
+    const scenario = await seedScenario();
+    const evaluatorId = randomUUID();
+    await db.insert(agents).values({
+      id: evaluatorId,
+      companyId: scenario.companyId,
+      name: "evaluator",
+      role: "qa",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const snapshot: IssuePipelineSnapshot = {
+      pipelineId: scenario.pipelineId,
+      name: "Learning delivery",
+      description: null,
+      executionMode: "stage_tasks",
+      trigger: null,
+      steps: [
+        {
+          key: "implement",
+          kind: "work",
+          label: "Implement",
+          participant: { type: "agent", agentId: scenario.implementerId },
+        },
+        {
+          key: "evaluate",
+          kind: "eval",
+          label: "Evaluate",
+          participant: { type: "agent", agentId: evaluatorId },
+          minScore: 7,
+          maxScore: 10,
+          onFailStepKey: "implement",
+          maxAttempts: 3,
+        },
+      ],
+    };
+    const repository = issuePipelineOrchestratorRepository(db);
+    const started = await issuePipelineOrchestrator(repository).start({
+      companyId: scenario.companyId,
+      selectedProjectId: scenario.projectId,
+      issueId: scenario.rootIssueId,
+      sourceKey: `learning:${scenario.rootIssueId}`,
+      pipelineSnapshot: snapshot,
+    });
+    const revision = await agentHarnessService(db).ensureRevision(
+      scenario.implementerId,
+      scenario.companyId,
+    );
+    expect(revision).not.toBeNull();
+    const workerHeartbeatId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: workerHeartbeatId,
+      companyId: scenario.companyId,
+      agentId: scenario.implementerId,
+      harnessRevisionId: revision!.id,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { issueId: "unrelated-direct-context" },
+      finishedAt: new Date(),
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId: scenario.companyId,
+      agentId: scenario.implementerId,
+      adapterType: "opencode_local",
+      taskKey: started.stageTask.issueId,
+      harnessRevisionId: revision!.id,
+      lastRunId: workerHeartbeatId,
+    });
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const traversal = issuePipelineStageTraversalService(db, {
+      repository,
+      heartbeat: { wakeup },
+    });
+    const implementation = await traversal.afterCommittedIssueMutation({
+      issue: {
+        id: started.stageTask.issueId,
+        companyId: scenario.companyId,
+        originKind: "pipeline_step",
+        originId: started.run.id,
+        status: "done",
+      },
+      pipelineOutcome: "passed",
+      pipelineSummary: "Implementation ready for evaluation",
+    });
+    const evaluationTask = implementation.nextStageTask!;
+    const evaluated = await traversal.afterCommittedIssueMutation({
+      issue: {
+        id: evaluationTask.issueId,
+        companyId: scenario.companyId,
+        originKind: "pipeline_step",
+        originId: started.run.id,
+        status: "done",
+      },
+      pipelineOutcome: "failed",
+      pipelineSummary: "Regression coverage is incomplete",
+      evalScore: 6,
+      requestedByActorType: "agent",
+      requestedByActorId: evaluatorId,
+    });
+    expect(evaluated).toMatchObject({
+      handled: true,
+      claimed: true,
+      nextStageTask: { stageKey: "implement", attempt: 2 },
+    });
+    expect(evaluated.nextStageTask?.issueId).not.toBe(started.stageTask.issueId);
+    await traversal.afterCommittedIssueMutation({
+      issue: {
+        id: evaluationTask.issueId,
+        companyId: scenario.companyId,
+        originKind: "pipeline_step",
+        originId: started.run.id,
+        status: "done",
+      },
+      pipelineOutcome: "failed",
+      pipelineSummary: "Regression coverage is incomplete",
+      evalScore: 6,
+      requestedByActorType: "agent",
+      requestedByActorId: evaluatorId,
+    });
+
+    const signals = await db
+      .select()
+      .from(agentLearningSignals)
+      .where(eq(agentLearningSignals.companyId, scenario.companyId));
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      agentId: scenario.implementerId,
+      harnessRevisionId: revision!.id,
+      runId: workerHeartbeatId,
+      issueId: started.stageTask.issueId,
+      signalType: "pipeline_evaluation",
+      outcome: "changes_requested",
+      score: 6,
+      maxScore: 10,
+      body: "Regression coverage is incomplete",
+      metadata: {
+        pipelineRunId: started.run.id,
+        gateTaskId: evaluationTask.issueId,
+        gateStageKey: "evaluate",
+        workerTaskId: started.stageTask.issueId,
+        workerStageKey: "implement",
+        evidenceSource: "task_session",
+      },
+    });
+    expect(signals.some((signal) => signal.agentId === evaluatorId)).toBe(false);
   });
 });

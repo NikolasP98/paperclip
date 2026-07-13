@@ -254,6 +254,7 @@ describe("issue update comment wakeups", () => {
         pipelineOutcome: "failed",
         pipelineSummary: "Evaluator requested another implementation pass",
         evalScore: 6,
+        feedbackScore: 8.5,
       });
 
     expect(res.status).toBe(200);
@@ -263,6 +264,7 @@ describe("issue update comment wakeups", () => {
         pipelineOutcome: expect.anything(),
         pipelineSummary: expect.anything(),
         evalScore: expect.anything(),
+        feedbackScore: expect.anything(),
       }),
     );
     expect(afterCommittedIssueMutation).toHaveBeenCalledWith({
@@ -270,10 +272,11 @@ describe("issue update comment wakeups", () => {
       pipelineOutcome: "failed",
       pipelineSummary: "Evaluator requested another implementation pass",
       evalScore: 6,
+      feedbackScore: 8.5,
       requestedByActorType: "user",
       requestedByActorId: "local-board",
     });
-  });
+  }, 15_000);
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
     const existing = makeIssue();

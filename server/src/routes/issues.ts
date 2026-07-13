@@ -5665,6 +5665,7 @@ export function issueRoutes(
         pipelineOutcome,
         pipelineSummary,
         evalScore,
+        feedbackScore,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
       });

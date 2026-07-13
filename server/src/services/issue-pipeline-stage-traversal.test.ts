@@ -8,7 +8,10 @@ import {
   type IssuePipelineStageTask,
   type MaterializeStageTaskInput,
 } from './issue-pipeline-orchestrator.js';
-import { issuePipelineStageTraversalService } from './issue-pipeline-stage-traversal.js';
+import {
+  issuePipelineStageTraversalService,
+  type IssuePipelineStageTraversalDeps,
+} from './issue-pipeline-stage-traversal.js';
 
 const deliveryPipeline: IssuePipelineSnapshot = {
   pipelineId: 'pipeline-delivery',
@@ -54,6 +57,60 @@ const evaluationPipeline: IssuePipelineSnapshot = {
       kind: 'work',
       label: 'Implement',
       participant: { type: 'agent', agentId: 'agent-implement' },
+    },
+  ],
+};
+
+const governedPipeline: IssuePipelineSnapshot = {
+  pipelineId: 'pipeline-governed',
+  name: 'Governed delivery',
+  description: null,
+  executionMode: 'stage_tasks',
+  trigger: null,
+  steps: [
+    {
+      key: 'plan',
+      kind: 'work',
+      label: 'Plan',
+      participant: { type: 'agent', agentId: 'agent-plan' },
+    },
+    {
+      key: 'plan-approval',
+      kind: 'approval',
+      label: 'Plan approval',
+      participant: { type: 'user', userId: 'user-approver' },
+      onFailStepKey: 'plan',
+      maxAttempts: 3,
+    },
+    {
+      key: 'implement',
+      kind: 'work',
+      label: 'Implement',
+      participant: { type: 'agent', agentId: 'agent-implement' },
+    },
+    {
+      key: 'evaluate',
+      kind: 'eval',
+      label: 'Evaluate',
+      participant: { type: 'agent', agentId: 'agent-evaluate' },
+      minScore: 7,
+      maxScore: 10,
+      onFailStepKey: 'implement',
+      maxAttempts: 3,
+    },
+    {
+      key: 'release-approval',
+      kind: 'approval',
+      label: 'Release approval',
+      participant: { type: 'user', userId: 'user-approver' },
+      onFailStepKey: 'implement',
+      maxAttempts: 3,
+    },
+    {
+      key: 'merge',
+      kind: 'work',
+      label: 'Merge',
+      participant: { type: 'agent', agentId: 'agent-merge' },
     },
   ],
 };
@@ -177,7 +234,13 @@ class MemoryRepository implements IssuePipelineOrchestratorRepository {
   }
 }
 
-async function setup(pipeline: IssuePipelineSnapshot) {
+async function setup(
+  pipeline: IssuePipelineSnapshot,
+  learning?: {
+    captureLearningSignal?: NonNullable<IssuePipelineStageTraversalDeps['captureLearningSignal']>;
+    resolveWorkerEvidence?: NonNullable<IssuePipelineStageTraversalDeps['resolveWorkerEvidence']>;
+  },
+) {
   const repository = new MemoryRepository();
   const orchestrator = issuePipelineOrchestrator(repository, { createId: () => 'run-1' });
   await orchestrator.start({
@@ -188,6 +251,23 @@ async function setup(pipeline: IssuePipelineSnapshot) {
     pipelineSnapshot: pipeline,
   });
   const wakeup = vi.fn().mockResolvedValue({ id: 'heartbeat-run-1' });
+  const captureLearningSignal = vi.fn(
+    async (
+      input: Parameters<NonNullable<IssuePipelineStageTraversalDeps['captureLearningSignal']>>[0],
+    ) => (learning?.captureLearningSignal ? learning.captureLearningSignal(input) : {}),
+  );
+  const resolveWorkerEvidence = vi.fn(
+    async (
+      input: Parameters<NonNullable<IssuePipelineStageTraversalDeps['resolveWorkerEvidence']>>[0],
+    ) =>
+      learning?.resolveWorkerEvidence
+        ? learning.resolveWorkerEvidence(input)
+        : {
+            harnessRevisionId: 'harness-revision-1',
+            heartbeatRunId: 'worker-heartbeat-1',
+            source: 'heartbeat_run' as const,
+          },
+  );
   const service = issuePipelineStageTraversalService({} as Db, {
     repository,
     heartbeat: { wakeup },
@@ -203,13 +283,15 @@ async function setup(pipeline: IssuePipelineSnapshot) {
           }
         : null;
     },
+    captureLearningSignal,
+    resolveWorkerEvidence,
   });
-  return { repository, service, wakeup };
+  return { repository, service, wakeup, captureLearningSignal, resolveWorkerEvidence };
 }
 
-function committedStageIssue(status: 'done' | 'blocked' | 'cancelled') {
+function committedStageIssue(status: 'done' | 'blocked' | 'cancelled', id = 'issue-1') {
   return {
-    id: 'issue-1',
+    id,
     companyId: 'company-1',
     originKind: 'pipeline_step',
     originId: 'run-1',
@@ -294,6 +376,165 @@ describe('issuePipelineStageTraversalService', () => {
       maxScore: 10,
       outputSnapshot: { outcome: 'failed', summary: 'Regression coverage is incomplete' },
     });
+  });
+
+  it('attributes human and evaluator feedback to the frozen prior worker', async () => {
+    const { service, captureLearningSignal, resolveWorkerEvidence } = await setup(governedPipeline);
+
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-1'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan ready for review',
+    });
+    expect(captureLearningSignal).not.toHaveBeenCalled();
+
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-2'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan approved with minor feedback',
+      feedbackScore: 8.5,
+      requestedByActorType: 'user',
+      requestedByActorId: 'user-approver',
+    });
+    expect(captureLearningSignal).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-plan',
+        signalType: 'pipeline_human_gate',
+        outcome: 'approved',
+        body: 'Plan approved with minor feedback',
+        score: 8.5,
+        maxScore: 10,
+        harnessRevisionId: 'harness-revision-1',
+        runId: 'worker-heartbeat-1',
+      }),
+    );
+    expect(resolveWorkerEvidence).toHaveBeenLastCalledWith({
+      companyId: 'company-1',
+      workerAgentId: 'agent-plan',
+      workerTaskId: 'issue-1',
+    });
+
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-3'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Implementation complete',
+    });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-4'),
+      pipelineOutcome: 'failed',
+      pipelineSummary: 'Regression coverage is incomplete',
+      evalScore: 6,
+      requestedByActorType: 'agent',
+      requestedByActorId: 'agent-evaluate',
+    });
+    expect(captureLearningSignal).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-implement',
+        issueId: 'issue-3',
+        signalType: 'pipeline_evaluation',
+        outcome: 'changes_requested',
+        score: 6,
+        maxScore: 10,
+      }),
+    );
+    expect(
+      captureLearningSignal.mock.calls.some(
+        ([signal]) => (signal as { agentId?: string }).agentId === 'agent-evaluate',
+      ),
+    ).toBe(false);
+
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-4'),
+      pipelineOutcome: 'failed',
+      pipelineSummary: '   ',
+      evalScore: 6,
+    });
+    expect(captureLearningSignal).toHaveBeenCalledTimes(2);
+  });
+
+  it('attributes release approval to the latest implementation task', async () => {
+    const { service, captureLearningSignal, resolveWorkerEvidence } = await setup(governedPipeline);
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-1'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan complete',
+    });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-2'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan approved',
+    });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-3'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Implementation complete',
+    });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-4'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Evaluation passed',
+      evalScore: 9,
+    });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-5'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Release approved',
+    });
+
+    expect(captureLearningSignal).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-implement',
+        issueId: 'issue-3',
+        signalType: 'pipeline_human_gate',
+        outcome: 'approved',
+        score: null,
+        maxScore: null,
+      }),
+    );
+    expect(resolveWorkerEvidence).toHaveBeenLastCalledWith({
+      companyId: 'company-1',
+      workerAgentId: 'agent-implement',
+      workerTaskId: 'issue-3',
+    });
+  });
+
+  it('retries best-effort capture on duplicate traversal without breaking the committed transition', async () => {
+    const captureLearningSignal = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('learning store unavailable'))
+      .mockResolvedValue({ id: 'signal-1' });
+    const { service, wakeup } = await setup(governedPipeline, { captureLearningSignal });
+    await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-1'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan complete',
+    });
+
+    const first = await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-2'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan approved',
+      feedbackScore: 9,
+    });
+    const replay = await service.afterCommittedIssueMutation({
+      issue: committedStageIssue('done', 'issue-2'),
+      pipelineOutcome: 'passed',
+      pipelineSummary: 'Plan approved',
+      feedbackScore: 9,
+    });
+
+    expect(first).toMatchObject({ handled: true, claimed: true });
+    expect(replay).toMatchObject({ handled: true, claimed: false });
+    expect(captureLearningSignal).toHaveBeenCalledTimes(2);
+    expect(captureLearningSignal.mock.calls[0]?.[0].sourceKey).toBe(
+      captureLearningSignal.mock.calls[1]?.[0].sourceKey,
+    );
+    expect(captureLearningSignal.mock.calls[0]?.[0].sourceKey).toMatch(
+      /^pipeline-stage-learning:[A-Za-z0-9_-]+$/,
+    );
+    expect(captureLearningSignal.mock.calls[0]?.[0].sourceKey.length).toBeLessThanOrEqual(256);
+    // Implement is materialized once; replay never wakes another assignee.
+    expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the committed traversal successful when the best-effort wake is rejected', async () => {
