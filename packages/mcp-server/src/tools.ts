@@ -3,6 +3,7 @@ import {
   addIssueCommentSchema,
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
+  createAcceptedPlanDecompositionSchema,
   createApprovalSchema,
   createIssueInputSchema,
   createPipelineSchema,
@@ -115,6 +116,10 @@ const checkoutIssueToolSchema = z.object({
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(addIssueCommentSchema);
+
+const decomposeAcceptedPlanToolSchema = z.object({
+  issueId: issueIdSchema,
+}).merge(createAcceptedPlanDecompositionSchema);
 
 const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
@@ -516,6 +521,27 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+    ),
+    makeTool(
+      "paperclipListAcceptedPlanDecompositions",
+      "List exact-once child-task decompositions previously materialized from accepted plan revisions",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) =>
+        client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/accepted-plan-decompositions`,
+        ),
+    ),
+    makeTool(
+      "paperclipDecomposeAcceptedPlan",
+      "Materialize an accepted planner-stage plan revision into exact-once child tasks. Call it on the planner stage issue only after that revision has an accepted confirmation; repeating the same request safely reuses its children",
+      decomposeAcceptedPlanToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson(
+          "POST",
+          `/issues/${encodeURIComponent(issueId)}/accepted-plan-decompositions`,
+          { body },
+        ),
     ),
     makeTool(
       "paperclipUpdateIssue",

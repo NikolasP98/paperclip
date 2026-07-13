@@ -113,6 +113,68 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("materializes accepted plans through the exact-once decomposition endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({
+        decomposition: { id: "decomposition-1", status: "completed" },
+        childIssueIds: ["child-1"],
+        newlyCreatedChildIssueIds: ["child-1"],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipDecomposeAcceptedPlan");
+    await tool.execute({
+      issueId: "PAP-1135",
+      acceptedPlanRevisionId: "44444444-4444-4444-8444-444444444444",
+      children: [
+        {
+          title: "Implement the approved change",
+          acceptanceCriteria: ["Focused regression coverage passes"],
+          assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+          blockParentUntilDone: true,
+        },
+      ],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/accepted-plan-decompositions",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      acceptedPlanRevisionId: "44444444-4444-4444-8444-444444444444",
+      children: [
+        {
+          title: "Implement the approved change",
+          workMode: "standard",
+          status: "todo",
+          priority: "medium",
+          requestDepth: 0,
+          acceptanceCriteria: ["Focused regression coverage passes"],
+          assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+          blockParentUntilDone: true,
+        },
+      ],
+    });
+  });
+
+  it("lists accepted-plan decomposition history for traceability", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "decomposition-1", status: "completed" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListAcceptedPlanDecompositions");
+    await tool.execute({ issueId: "PAP-1135" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/accepted-plan-decompositions",
+    );
+    expect(init.method).toBe("GET");
+  });
+
   it("defaults issue document format to markdown", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ key: "plan", latestRevisionNumber: 2 }),
