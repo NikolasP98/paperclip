@@ -24,6 +24,16 @@ export interface RepositoryIssueClassification {
   needsHuman: boolean;
 }
 
+/** Exact output contract of Minion's allowlisted portfolio-issue-classifier-v1. */
+export interface MinionIssueClassification {
+  labels: string[];
+  scopes: string[];
+  projectKey: string;
+  projectGroup?: string;
+  confidence: number;
+  rationale: string;
+}
+
 export interface ProjectRouteRule {
   key: string;
   projectId: string;
@@ -44,6 +54,7 @@ export interface ProjectRouteDecision {
   projectId: string;
   reason:
     | "operator_override"
+    | "classifier_project"
     | "path"
     | "scope"
     | "cross_repo"
@@ -54,6 +65,109 @@ export interface ProjectRouteDecision {
   authoritativeRepository: MinionRepositoryKey;
   candidates: EvaluatedProjectRoute[];
   requiresHuman: boolean;
+}
+
+/**
+ * Resolve the bounded Minion classifier output through operator-owned rules.
+ * The signed webhook repository is authoritative. The model-selected key is
+ * only usable when it names a supplied rule for that repository; it never
+ * becomes a caller-controlled project id.
+ */
+export function resolveMinionClassifierProjectRoute(input: {
+  signedRepositoryFullName: string;
+  classification: MinionIssueClassification;
+  rules: ProjectRouteRule[];
+  intakeProjectId: string;
+  operatorProjectId?: string | null;
+  minimumConfidence?: number;
+}): ProjectRouteDecision {
+  const repository = repositoryKeyFromFullName(input.signedRepositoryFullName);
+  if (!repository) throw new Error(`Unsupported repository: ${input.signedRepositoryFullName}`);
+  if (input.operatorProjectId) {
+    return {
+      projectId: input.operatorProjectId,
+      reason: "operator_override",
+      authoritativeRepository: repository,
+      candidates: [],
+      requiresHuman: false,
+    };
+  }
+  if (input.classification.confidence < (input.minimumConfidence ?? 0.7)) {
+    return {
+      projectId: input.intakeProjectId,
+      reason: "low_confidence",
+      authoritativeRepository: repository,
+      candidates: [],
+      requiresHuman: true,
+    };
+  }
+
+  const repositoryRules = input.rules.filter(
+    (rule) => rule.repository === repository || rule.repository === "cross-repo",
+  );
+  const classifierRule = repositoryRules.find((rule) => rule.key === input.classification.projectKey);
+  if (classifierRule) {
+    const matchedScopes = scopeMatches(classifierRule, input.classification.scopes);
+    const ruleHasScopes = (classifierRule.scopes?.length ?? 0) > 0;
+    if (!ruleHasScopes || matchedScopes.length > 0) {
+      return {
+        projectId: classifierRule.projectId,
+        reason: "classifier_project",
+        authoritativeRepository: repository,
+        candidates: [
+          {
+            ruleKey: classifierRule.key,
+            projectId: classifierRule.projectId,
+            precedence: ruleHasScopes ? "scope" : classifierRule.repository === "cross-repo" ? "cross_repo" : "repository_default",
+            matchedPathPrefix: null,
+            matchedScopes,
+          },
+        ],
+        requiresHuman: classifierRule.projectId === input.intakeProjectId,
+      };
+    }
+  }
+
+  const scopeDecision = chooseUnique(
+    repositoryRules
+      .map((rule) => ({ rule, scopes: scopeMatches(rule, input.classification.scopes) }))
+      .filter((value) => value.scopes.length > 0)
+      .map(({ rule, scopes }) => ({
+        ruleKey: rule.key,
+        projectId: rule.projectId,
+        precedence: "scope",
+        matchedPathPrefix: null,
+        matchedScopes: scopes,
+      })),
+    input.intakeProjectId,
+    repository,
+    "ambiguous",
+  );
+  if (scopeDecision) return scopeDecision;
+
+  const defaultDecision = chooseUnique(
+    repositoryRules
+      .filter((rule) => rule.repository === repository && !rule.scopes?.length && !rule.pathPrefixes?.length)
+      .map((rule) => ({
+        ruleKey: rule.key,
+        projectId: rule.projectId,
+        precedence: "repository_default",
+        matchedPathPrefix: null,
+        matchedScopes: [],
+      })),
+    input.intakeProjectId,
+    repository,
+    "ambiguous",
+  );
+  return (
+    defaultDecision ?? {
+      projectId: input.intakeProjectId,
+      reason: "unmatched",
+      authoritativeRepository: repository,
+      candidates: [],
+      requiresHuman: true,
+    }
+  );
 }
 
 const REPOSITORY_ALIASES: Record<string, MinionRepositoryKey> = {

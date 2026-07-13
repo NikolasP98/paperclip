@@ -150,7 +150,9 @@ class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchest
     selectedProjectId: string;
     issueId: string;
     sourceKey: string;
+    sourceDeliveryId?: string | null;
     pipelineSnapshot: IssuePipelineSnapshot;
+    routingSnapshot?: IssuePipelineRoutingSnapshot;
     currentStepKey: string;
   }): Promise<{ run: IssuePipelineRun; created: boolean }> {
     return this.db.transaction(async (tx) => {
@@ -179,25 +181,36 @@ class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchest
         .then((rows) => rows[0] ?? null);
       if (!selectedProject) throw new Error(`selected project not found: ${input.selectedProjectId}`);
 
-      const routingSnapshot: IssuePipelineRoutingSnapshot = {
-        repository: null,
-        originalLabels: [],
-        inferredLabels: [],
-        classifierOutput: null,
-        candidates: [
-          {
-            portfolioId: selectedProject.portfolioId,
-            projectId: selectedProject.id,
+      if (input.routingSnapshot?.selectedProjectId && input.routingSnapshot.selectedProjectId !== selectedProject.id) {
+        throw new Error(
+          `routing snapshot selected project ${input.routingSnapshot.selectedProjectId} does not match ${selectedProject.id}`,
+        );
+      }
+      const routingSnapshot: IssuePipelineRoutingSnapshot = input.routingSnapshot
+        ? {
+            ...structuredClone(input.routingSnapshot),
+            selectedPortfolioId: selectedProject.portfolioId,
+            selectedProjectId: selectedProject.id,
+          }
+        : {
+            repository: null,
+            originalLabels: [],
+            inferredLabels: [],
+            classifierOutput: null,
+            candidates: [
+              {
+                portfolioId: selectedProject.portfolioId,
+                projectId: selectedProject.id,
+                confidence: 1,
+                reason: "selected by issue pipeline orchestration",
+              },
+            ],
+            selectedPortfolioId: selectedProject.portfolioId,
+            selectedProjectId: selectedProject.id,
             confidence: 1,
-            reason: "selected by issue pipeline orchestration",
-          },
-        ],
-        selectedPortfolioId: selectedProject.portfolioId,
-        selectedProjectId: selectedProject.id,
-        confidence: 1,
-        resolution: "override",
-        reason: "selected project supplied by the routing stage",
-      };
+            resolution: "override",
+            reason: "selected project supplied by the routing stage",
+          };
       const now = new Date();
       const inserted = await tx
         .insert(issuePipelineRuns)
@@ -211,6 +224,7 @@ class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchest
           currentStepKey: input.currentStepKey,
           sourceOriginKind: root.originKind,
           sourceOriginId: input.sourceKey,
+          sourceDeliveryId: input.sourceDeliveryId ?? null,
           pipelineSnapshot: input.pipelineSnapshot,
           pipelineSnapshotHash: contentHash(input.pipelineSnapshot),
           routingSnapshot,

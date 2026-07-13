@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classificationLabels,
   repositoryKeyFromFullName,
+  resolveMinionClassifierProjectRoute,
   resolveProjectRoute,
   type RepositoryIssueClassification,
 } from "./project-routing.js";
@@ -71,5 +72,47 @@ describe("MINION Code project routing", () => {
       "scope:auth",
       "risk:security",
     ]);
+  });
+
+  it("maps the fixed Minion classifier key only through a signed-repository route", () => {
+    const decision = resolveMinionClassifierProjectRoute({
+      signedRepositoryFullName: "NikolasP98/minion_hub",
+      classification: {
+        labels: ["bug"],
+        scopes: ["workforce"],
+        projectKey: "hub-workforce",
+        confidence: 0.92,
+        rationale: "The issue concerns the workforce projects surface.",
+      },
+      intakeProjectId: "intake",
+      rules: [
+        { key: "hub-workforce", projectId: "workforce", repository: "minion-hub", scopes: ["workforce"] },
+        { key: "hub-workforce", projectId: "wrong-repo", repository: "minion-ai", scopes: ["workforce"] },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      projectId: "workforce",
+      reason: "classifier_project",
+      authoritativeRepository: "minion-hub",
+      requiresHuman: false,
+    });
+  });
+
+  it("sends low-confidence fixed classifier output to intake", () => {
+    const decision = resolveMinionClassifierProjectRoute({
+      signedRepositoryFullName: "NikolasP98/minion_hub",
+      classification: {
+        labels: ["bug"],
+        scopes: ["workforce"],
+        projectKey: "hub-workforce",
+        confidence: 0.4,
+        rationale: "Insufficient evidence.",
+      },
+      intakeProjectId: "intake",
+      rules: [{ key: "hub-workforce", projectId: "workforce", repository: "minion-hub", scopes: ["workforce"] }],
+    });
+
+    expect(decision).toMatchObject({ projectId: "intake", reason: "low_confidence", requiresHuman: true });
   });
 });

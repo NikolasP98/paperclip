@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   IssuePipelineEventType,
+  IssuePipelineRoutingSnapshot,
   IssuePipelineRun,
   IssuePipelineSnapshot,
   PipelineStep,
@@ -64,7 +65,9 @@ export interface IssuePipelineOrchestratorRepository {
     selectedProjectId: string;
     issueId: string;
     sourceKey: string;
+    sourceDeliveryId?: string | null;
     pipelineSnapshot: IssuePipelineSnapshot;
+    routingSnapshot?: IssuePipelineRoutingSnapshot;
     currentStepKey: string;
   }): Promise<{ run: IssuePipelineRun; created: boolean }>;
   getRun(runId: string): Promise<IssuePipelineRun | null>;
@@ -98,7 +101,10 @@ export interface StartIssuePipelineInput {
   issueId: string;
   /** Stable ingress key derived from the original issue delivery. */
   sourceKey: string;
+  sourceDeliveryId?: string | null;
   pipelineSnapshot: IssuePipelineSnapshot;
+  /** Classification and deterministic route evidence available before run creation. */
+  routingSnapshot?: IssuePipelineRoutingSnapshot;
 }
 
 export interface CompleteStageTaskInput {
@@ -260,7 +266,9 @@ export function issuePipelineOrchestrator(
         selectedProjectId: input.selectedProjectId,
         issueId: input.issueId,
         sourceKey: input.sourceKey,
+        sourceDeliveryId: input.sourceDeliveryId,
         pipelineSnapshot,
+        routingSnapshot: input.routingSnapshot ? structuredClone(input.routingSnapshot) : undefined,
         currentStepKey: firstStage.key,
       });
 
