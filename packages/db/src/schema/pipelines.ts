@@ -10,6 +10,7 @@ export const pipelines = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
+    executionMode: text("execution_mode").notNull().default("inline"),
     trigger: jsonb("trigger").$type<Record<string, unknown>>(),
     steps: jsonb("steps").$type<Array<Record<string, unknown>>>().notNull(),
     sortOrder: integer("sort_order").notNull().default(0),

@@ -30,6 +30,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { portfolioRoutes } from "./routes/portfolios.js";
 import { pipelineRoutes } from "./routes/pipelines.js";
 import { agentHarnessRoutes } from "./routes/agent-harnesses.js";
+import { issuePipelineRunRoutes } from "./routes/issue-pipeline-runs.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -333,6 +334,7 @@ export async function createApp(
   );
   api.use(adapterRoutes());
   api.use(agentHarnessRoutes(db));
+  api.use(issuePipelineRunRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

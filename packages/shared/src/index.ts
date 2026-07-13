@@ -104,6 +104,9 @@ export {
   PROJECT_STATUSES,
   PORTFOLIO_STATUSES,
   PIPELINE_STEP_KINDS,
+  PIPELINE_EXECUTION_MODES,
+  ISSUE_PIPELINE_RUN_STATUSES,
+  ISSUE_PIPELINE_EVENT_TYPES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -230,6 +233,9 @@ export {
   type ProjectStatus,
   type PortfolioStatus,
   type PipelineStepKind,
+  type PipelineExecutionMode,
+  type IssuePipelineRunStatus,
+  type IssuePipelineEventType,
   type EnvironmentDriver,
   type EnvironmentStatus,
   type EnvironmentLeaseStatus,
@@ -1439,11 +1445,22 @@ export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
 
 export type { Portfolio } from "./types/portfolio.js";
 export type * from "./types/agent-harness.js";
-export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./types/pipeline.js";
+export type {
+  IssuePipelineEvent,
+  IssuePipelineRouteCandidate,
+  IssuePipelineRoutingSnapshot,
+  IssuePipelineRun,
+  IssuePipelineSnapshot,
+  Pipeline,
+  PipelineStep,
+  PipelineStepParticipant,
+  PipelineTrigger,
+} from "./types/pipeline.js";
 
 export {
   pipelineStepParticipantSchema,
   pipelineStepSchema,
+  pipelineExecutionModeSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
   createPipelineSchema,

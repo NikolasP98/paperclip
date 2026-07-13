@@ -256,6 +256,8 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
+  "github_issue",
+  "pipeline_step",
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
@@ -413,6 +415,34 @@ export type PortfolioStatus = (typeof PORTFOLIO_STATUSES)[number];
 
 export const PIPELINE_STEP_KINDS = ["work", "review", "approval", "eval"] as const;
 export type PipelineStepKind = (typeof PIPELINE_STEP_KINDS)[number];
+
+export const PIPELINE_EXECUTION_MODES = ["inline", "stage_tasks"] as const;
+export type PipelineExecutionMode = (typeof PIPELINE_EXECUTION_MODES)[number];
+
+export const ISSUE_PIPELINE_RUN_STATUSES = [
+  "pending",
+  "active",
+  "blocked",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type IssuePipelineRunStatus = (typeof ISSUE_PIPELINE_RUN_STATUSES)[number];
+
+export const ISSUE_PIPELINE_EVENT_TYPES = [
+  "run_created",
+  "routing_resolved",
+  "stage_created",
+  "stage_started",
+  "stage_completed",
+  "stage_failed",
+  "stage_retry_scheduled",
+  "run_blocked",
+  "run_completed",
+  "run_failed",
+  "run_cancelled",
+] as const;
+export type IssuePipelineEventType = (typeof ISSUE_PIPELINE_EVENT_TYPES)[number];
 
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];

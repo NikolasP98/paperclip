@@ -187,7 +187,17 @@ export type {
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type { Portfolio } from "./portfolio.js";
 export type * from "./agent-harness.js";
-export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./pipeline.js";
+export type {
+  IssuePipelineEvent,
+  IssuePipelineRouteCandidate,
+  IssuePipelineRoutingSnapshot,
+  IssuePipelineRun,
+  IssuePipelineSnapshot,
+  Pipeline,
+  PipelineStep,
+  PipelineStepParticipant,
+  PipelineTrigger,
+} from "./pipeline.js";
 export type {
   CompanySearchHighlight,
   CompanySearchArtifactSummary,

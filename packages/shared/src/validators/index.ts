@@ -527,6 +527,7 @@ export {
 export {
   pipelineStepParticipantSchema,
   pipelineStepSchema,
+  pipelineExecutionModeSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
   createPipelineSchema,
