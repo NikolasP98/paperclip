@@ -4908,7 +4908,22 @@ export function issueService(db: Db) {
             issueData.projectId = workspaceSource.projectId;
           }
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
-            projectWorkspaceId = workspaceSource.projectWorkspaceId;
+            const sourceProjectWorkspace = await tx
+              .select({
+                id: projectWorkspaces.id,
+                projectId: projectWorkspaces.projectId,
+              })
+              .from(projectWorkspaces)
+              .where(
+                and(
+                  eq(projectWorkspaces.id, workspaceSource.projectWorkspaceId),
+                  eq(projectWorkspaces.companyId, companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (sourceProjectWorkspace?.projectId === issueData.projectId) {
+              projectWorkspaceId = sourceProjectWorkspace.id;
+            }
           }
           if (
             isolatedWorkspacesEnabled &&
@@ -4919,11 +4934,17 @@ export function issueService(db: Db) {
               .select({
                 id: executionWorkspaces.id,
                 mode: executionWorkspaces.mode,
+                projectId: executionWorkspaces.projectId,
               })
               .from(executionWorkspaces)
-              .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
+              .where(
+                and(
+                  eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId),
+                  eq(executionWorkspaces.companyId, companyId),
+                ),
+              )
               .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
+            if (sourceWorkspace?.projectId === issueData.projectId) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {

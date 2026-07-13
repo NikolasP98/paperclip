@@ -2939,6 +2939,98 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspacePreference).not.toBe("reuse_existing");
   });
 
+  it("createChild ignores stale workspace linkage after the parent was rerouted to the selected project", async () => {
+    const companyId = randomUUID();
+    const oldProjectId = randomUUID();
+    const selectedProjectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const staleProjectWorkspaceId = randomUUID();
+    const selectedProjectWorkspaceId = randomUUID();
+    const staleExecutionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values([
+      {
+        id: oldProjectId,
+        companyId,
+        name: "Old bug triage",
+        status: "in_progress",
+      },
+      {
+        id: selectedProjectId,
+        companyId,
+        name: "Portfolio intake",
+        status: "in_progress",
+      },
+    ]);
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: staleProjectWorkspaceId,
+        companyId,
+        projectId: oldProjectId,
+        name: "Old bug triage workspace",
+        isPrimary: true,
+      },
+      {
+        id: selectedProjectWorkspaceId,
+        companyId,
+        projectId: selectedProjectId,
+        name: "Portfolio intake workspace",
+        isPrimary: true,
+      },
+    ]);
+
+    await db.insert(executionWorkspaces).values({
+      id: staleExecutionWorkspaceId,
+      companyId,
+      projectId: oldProjectId,
+      projectWorkspaceId: staleProjectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Old bug triage worktree",
+      status: "active",
+      providerType: "git_worktree",
+      providerRef: `/tmp/${staleExecutionWorkspaceId}`,
+    });
+
+    // createRunIfAbsent reroutes the root project before stage materialization,
+    // but the persisted workspace references can still point at the old project.
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId: selectedProjectId,
+      projectWorkspaceId: staleProjectWorkspaceId,
+      title: "Rerouted GitHub issue",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId: staleExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Materialize classifier stage",
+      status: "todo",
+      projectId: selectedProjectId,
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.projectId).toBe(selectedProjectId);
+    expect(child.projectWorkspaceId).toBe(selectedProjectWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).not.toBe("reuse_existing");
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
