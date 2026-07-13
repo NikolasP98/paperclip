@@ -323,10 +323,63 @@ describeDb('merge-readiness finalizer', () => {
     expect(decompositions).toHaveLength(1);
     expect(decompositions[0]).toMatchObject({ status: 'completed', requestedChildCount: 2 });
     const decomposedChildren = await db.select().from(issues).where(eq(issues.parentId, root.id));
-    expect(decomposedChildren.filter((issue) => issue.originKind !== 'pipeline_step')).toHaveLength(
-      2,
+    const decomposedChildById = new Map(decomposedChildren.map((issue) => [issue.id, issue]));
+    const acceptedPlanChildren = decompositions[0]!.childIssueIds.map((id) =>
+      decomposedChildById.get(id),
+    );
+    expect(acceptedPlanChildren).toHaveLength(2);
+    expect(acceptedPlanChildren.every(Boolean)).toBe(true);
+    const implementTask = decomposedChildren.find(
+      (issue) => issue.originKind === 'pipeline_step' && issue.originFingerprint === 'implement:1',
+    );
+    expect(implementTask?.description).toContain(
+      'Objective:\nMake theme persistence best-effort without breaking preference updates.',
+    );
+    expect(implementTask?.description).toContain(
+      `Accepted plan revision: ${plan?.latestRevisionId}`,
+    );
+    expect(implementTask?.description).toContain(
+      `${acceptedPlanChildren[0]!.identifier} — Guard theme storage (plan key: guard-storage)`,
+    );
+    expect(implementTask?.description).toContain(
+      `${acceptedPlanChildren[1]!.identifier} — Add storage regression coverage (plan key: regression-test)`,
     );
     expect(implementWake).toHaveBeenCalledTimes(1);
+    expect(implementWake.mock.calls[0]?.[1].contextSnapshot).toMatchObject({
+      acceptedPlanRevisionId: plan?.latestRevisionId,
+      acceptedPlanObjective:
+        'Make theme persistence best-effort without breaking preference updates.',
+      childIssueSummaries: [
+        {
+          id: acceptedPlanChildren[0]!.id,
+          identifier: acceptedPlanChildren[0]!.identifier,
+          title: 'Guard theme storage',
+          status: 'backlog',
+          summary: expect.stringContaining('Accepted plan key guard-storage.'),
+        },
+        {
+          id: acceptedPlanChildren[1]!.id,
+          identifier: acceptedPlanChildren[1]!.identifier,
+          title: 'Add storage regression coverage',
+          status: 'backlog',
+          summary: expect.stringContaining('Accepted plan key regression-test.'),
+        },
+      ],
+    });
+    const implementStageTask = (
+      await issuePipelineOrchestratorRepository(db).listStageTasks(started.run.id)
+    ).find((task) => task.stageKey === 'implement');
+    expect(implementStageTask).toBeTruthy();
+    await queuePipelineStageTaskWakeup({
+      db,
+      heartbeat: { wakeup: vi.fn().mockResolvedValue({ id: 'replayed-implement-wake' }) },
+      run: started.run,
+      stageTask: implementStageTask!,
+    });
+    const replayedImplementTask = await issueService(db).getById(implementStageTask!.issueId);
+    expect(
+      replayedImplementTask?.description?.match(/<!-- paperclip:accepted-plan-handoff:start -->/g),
+    ).toHaveLength(1);
     expect(await documentService(db).listIssueDocumentRevisions(root.id, 'plan')).toHaveLength(1);
   });
 

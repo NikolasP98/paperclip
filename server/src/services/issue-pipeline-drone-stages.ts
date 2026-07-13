@@ -7,6 +7,7 @@ import {
   issueComments,
   issueDocuments,
   issueLabels,
+  issuePlanDecompositions,
   issuePipelineEvents,
   issuePipelineRuns,
   issues,
@@ -204,6 +205,24 @@ type PlannerOutput = z.infer<typeof plannerDroneOutputSchema>;
 type MergeReadinessInput = z.infer<typeof mergeReadinessDroneInputSchema>;
 type MergeReadinessOutput = z.infer<typeof mergeReadinessDroneOutputSchema>;
 
+interface AcceptedPlanHandoff {
+  acceptedPlanRevisionId: string;
+  objective: string;
+  stageDescription: string;
+  childIssueSummaries: Array<{
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+    priority: string;
+    summary: string;
+  }>;
+}
+
+const ACCEPTED_PLAN_HANDOFF_START = '<!-- paperclip:accepted-plan-handoff:start -->';
+const ACCEPTED_PLAN_HANDOFF_END = '<!-- paperclip:accepted-plan-handoff:end -->';
+const ACCEPTED_PLAN_HANDOFF_MAX_CHARS = 32_000;
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -218,6 +237,145 @@ function truncate(value: string | null | undefined, max: number): string {
   return Array.from(value ?? '')
     .slice(0, max)
     .join('');
+}
+
+function appendAcceptedPlanHandoff(description: string | null, handoff: string): string {
+  const current = description?.trim() ?? '';
+  const markerStart = current.indexOf(ACCEPTED_PLAN_HANDOFF_START);
+  const markerEnd = markerStart < 0 ? -1 : current.indexOf(ACCEPTED_PLAN_HANDOFF_END, markerStart);
+  const existingHandoffEnd =
+    markerEnd < markerStart ? current.length : markerEnd + ACCEPTED_PLAN_HANDOFF_END.length;
+  const withoutExisting =
+    markerStart < 0
+      ? current
+      : [current.slice(0, markerStart), current.slice(existingHandoffEnd)].join('').trim();
+  return [withoutExisting || null, handoff].filter(Boolean).join('\n\n');
+}
+
+async function buildAcceptedPlanHandoff(
+  db: Db,
+  run: IssuePipelineRun,
+  stageTask: IssuePipelineStageTask,
+): Promise<AcceptedPlanHandoff | null> {
+  if (stageTask.stageKey !== 'implement') return null;
+  const implementIndex = run.pipelineSnapshot.steps.findIndex(
+    (step) => step.key === stageTask.stageKey,
+  );
+  const planIndex = run.pipelineSnapshot.steps.findIndex((step) => step.key === 'plan');
+  const approvalIndex = run.pipelineSnapshot.steps.findIndex(
+    (step) => step.key === 'plan-approval',
+  );
+  if (
+    planIndex < 0 ||
+    approvalIndex < 0 ||
+    planIndex >= approvalIndex ||
+    approvalIndex >= implementIndex
+  ) {
+    return null;
+  }
+
+  const planEvent = await db
+    .select({ outputSnapshot: issuePipelineEvents.outputSnapshot })
+    .from(issuePipelineEvents)
+    .where(
+      and(
+        eq(issuePipelineEvents.pipelineRunId, run.id),
+        eq(issuePipelineEvents.stepKey, 'plan'),
+        eq(issuePipelineEvents.eventType, 'stage_completed'),
+      ),
+    )
+    .orderBy(desc(issuePipelineEvents.sequence))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!planEvent) throw new Error('implementation stage has no completed Plan artifact event');
+  const planSnapshot = asRecord(planEvent.outputSnapshot);
+  const plan = plannerDroneOutputSchema.parse(planSnapshot.validatedOutput);
+  const acceptedPlanRevisionId = z.string().uuid().parse(planSnapshot.planRevisionId);
+
+  const decomposition = await db
+    .select({
+      status: issuePlanDecompositions.status,
+      childIssueIds: issuePlanDecompositions.childIssueIds,
+    })
+    .from(issuePlanDecompositions)
+    .where(
+      and(
+        eq(issuePlanDecompositions.companyId, run.companyId),
+        eq(issuePlanDecompositions.sourceIssueId, run.issueId),
+        eq(issuePlanDecompositions.acceptedPlanRevisionId, acceptedPlanRevisionId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!decomposition || decomposition.status !== 'completed') {
+    throw new Error('implementation stage has no completed accepted-plan decomposition');
+  }
+  const childIssueIds = decomposition.childIssueIds.filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  if (childIssueIds.length !== plan.subtasks.length) {
+    throw new Error(
+      `accepted-plan decomposition has ${childIssueIds.length} children for ${plan.subtasks.length} subtasks`,
+    );
+  }
+  const childRows = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
+      status: issues.status,
+      priority: issues.priority,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, childIssueIds)));
+  const childById = new Map(childRows.map((child) => [child.id, child]));
+  const children = childIssueIds.map((childIssueId, index) => {
+    const child = childById.get(childIssueId);
+    if (!child) throw new Error(`accepted-plan child issue not found: ${childIssueId}`);
+    return { child, planned: plan.subtasks[index]! };
+  });
+  const handoffBody = truncate(
+    [
+      '## Accepted implementation plan',
+      '',
+      `Accepted plan revision: ${acceptedPlanRevisionId}`,
+      '',
+      'Objective:',
+      plan.objective,
+      '',
+      'Traceable plan subtasks:',
+      ...children.flatMap(({ child, planned }) => [
+        '',
+        `- ${child.identifier ?? child.id} — ${child.title} (plan key: ${planned.key})`,
+        truncate(child.description ?? planned.description, 2_000),
+      ]),
+      '',
+      'Implement the accepted objective across these traced sibling subtasks. Keep the stage task and pull-request evidence linked to the main task; do not re-plan or switch repositories.',
+    ].join('\n'),
+    ACCEPTED_PLAN_HANDOFF_MAX_CHARS -
+      ACCEPTED_PLAN_HANDOFF_START.length -
+      ACCEPTED_PLAN_HANDOFF_END.length -
+      2,
+  );
+  const stageDescription = [
+    ACCEPTED_PLAN_HANDOFF_START,
+    handoffBody,
+    ACCEPTED_PLAN_HANDOFF_END,
+  ].join('\n');
+  return {
+    acceptedPlanRevisionId,
+    objective: plan.objective,
+    stageDescription,
+    childIssueSummaries: children.map(({ child, planned }) => ({
+      id: child.id,
+      identifier: child.identifier,
+      title: child.title,
+      status: child.status,
+      priority: child.priority,
+      summary: `Accepted plan key ${planned.key}. ${truncate(child.description ?? planned.description, 1_000)}`,
+    })),
+  };
 }
 
 function validationIssues(error: z.ZodError) {
@@ -547,8 +705,19 @@ export async function queuePipelineStageTaskWakeup(input: {
   requestedByActorType?: 'user' | 'agent' | 'system';
   requestedByActorId?: string | null;
 }) {
-  const issue = await issueService(input.db).getById(input.stageTask.issueId);
+  let issue = await issueService(input.db).getById(input.stageTask.issueId);
   if (!issue) throw new Error(`pipeline stage issue not found: ${input.stageTask.issueId}`);
+  const acceptedPlanHandoff = await buildAcceptedPlanHandoff(input.db, input.run, input.stageTask);
+  if (acceptedPlanHandoff) {
+    const description = appendAcceptedPlanHandoff(
+      issue.description,
+      acceptedPlanHandoff.stageDescription,
+    );
+    if (description !== issue.description) {
+      issue = await issueService(input.db).update(issue.id, { description });
+      if (!issue) throw new Error(`pipeline stage issue disappeared: ${input.stageTask.issueId}`);
+    }
+  }
   const step = input.run.pipelineSnapshot.steps.find(
     (candidate) => candidate.key === input.stageTask.stageKey,
   );
@@ -574,6 +743,13 @@ export async function queuePipelineStageTaskWakeup(input: {
       contextSource: 'issue.pipeline_stage_traversal',
       requestedByActorType: input.requestedByActorType ?? 'system',
       requestedByActorId: input.requestedByActorId ?? null,
+      contextSnapshot: acceptedPlanHandoff
+        ? {
+            acceptedPlanRevisionId: acceptedPlanHandoff.acceptedPlanRevisionId,
+            acceptedPlanObjective: acceptedPlanHandoff.objective,
+            childIssueSummaries: acceptedPlanHandoff.childIssueSummaries,
+          }
+        : undefined,
     });
   }
   const drone = await buildStageDroneContext(input.db, input.run, input.stageTask);
