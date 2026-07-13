@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   agentHarnessRevisions,
   agents,
+  companySecretBindings,
+  companySecrets,
   companies,
   createDb,
   pipelines,
@@ -46,13 +48,20 @@ describeDb('MINION Code portfolio seed', () => {
     return company.id;
   }
 
-  function input(companyId: string) {
+  async function input(companyId: string) {
+    const minionGatewayTokenSecretId = randomUUID();
+    await db.insert(companySecrets).values({
+      id: minionGatewayTokenSecretId,
+      companyId,
+      key: `minion-gateway-${minionGatewayTokenSecretId}`,
+      name: `Minion gateway ${minionGatewayTokenSecretId}`,
+    });
     return {
       companyId,
       planApproverUserId: 'board-plan-approver',
       releaseApproverUserId: 'board-release-approver',
       minionGatewayUrl: 'ws://127.0.0.1:18789',
-      minionGatewayTokenSecretId: randomUUID(),
+      minionGatewayTokenSecretId,
       repositoryWorkspaces: repositoryWorkspaceInput(),
     };
   }
@@ -106,7 +115,7 @@ describeDb('MINION Code portfolio seed', () => {
 
   it('fails closed when a repository workspace is not container-absolute', async () => {
     const companyId = await createCompany('MINION Invalid Workspace Co');
-    const seedInput = input(companyId);
+    const seedInput = await input(companyId);
     await expect(
       seedMinionCodePortfolio(db, {
         ...seedInput,
@@ -123,7 +132,7 @@ describeDb('MINION Code portfolio seed', () => {
 
   it('previews without writes, applies the grouped portfolio, and reruns without reconciliation drift', async () => {
     const companyId = await createCompany('MINION Seed Co');
-    const seedInput = input(companyId);
+    const seedInput = await input(companyId);
 
     const preview = await seedMinionCodePortfolio(db, seedInput);
     expect(preview.applied).toBe(false);
@@ -196,6 +205,24 @@ describeDb('MINION Code portfolio seed', () => {
     expect(agentRows).toHaveLength(7);
     expect(pipelineRows).toHaveLength(1);
     expect(harnessRows).toHaveLength(7);
+
+    const secretBindings = await db.select().from(companySecretBindings);
+    expect(secretBindings).toHaveLength(3);
+    expect(
+      secretBindings.map((binding) => ({
+        targetId: binding.targetId,
+        configPath: binding.configPath,
+        secretId: binding.secretId,
+      })),
+    ).toEqual(
+      expect.arrayContaining(
+        (['classifier', 'planner', 'merger'] as const).map((role) => ({
+          targetId: applied.agentIds[role],
+          configPath: 'env.MINION_GATEWAY_TOKEN',
+          secretId: seedInput.minionGatewayTokenSecretId,
+        })),
+      ),
+    );
 
     const intake = projectRows.find((project) => project.id === applied.intakeProjectId);
     expect(intake?.metadata).toMatchObject({
@@ -315,9 +342,7 @@ describeDb('MINION Code portfolio seed', () => {
     expect(rerun.actions.every((action) => action.operation === 'unchanged')).toBe(true);
     expect(await db.select().from(portfolios)).toHaveLength(1);
     expect(await db.select().from(projects)).toHaveLength(MINION_CODE_PROJECTS.length);
-    expect(await db.select().from(projectWorkspaces)).toHaveLength(
-      MINION_CODE_PROJECTS.length - 1,
-    );
+    expect(await db.select().from(projectWorkspaces)).toHaveLength(MINION_CODE_PROJECTS.length - 1);
     expect(await db.select().from(agents)).toHaveLength(7);
     expect(await db.select().from(pipelines)).toHaveLength(1);
     expect(await db.select().from(agentHarnessRevisions)).toHaveLength(7);
@@ -362,7 +387,10 @@ describeDb('MINION Code portfolio seed', () => {
       },
     ]);
 
-    const result = await seedMinionCodePortfolio(db, { ...input(companyId), apply: true });
+    const result = await seedMinionCodePortfolio(db, {
+      ...(await input(companyId)),
+      apply: true,
+    });
     expect(result.agentIds.implementer).toBe(existingImplementerId);
     expect(result.agentIds.evaluator).not.toBe(existingImplementerId);
     expect(result.agentIds.evaluator).not.toBe(existingReviewerId);
@@ -395,7 +423,7 @@ describeDb('MINION Code portfolio seed', () => {
   it('activates Hermes only when the operator supplies a probed model', async () => {
     const companyId = await createCompany('MINION Hermes Co');
     const result = await seedMinionCodePortfolio(db, {
-      ...input(companyId),
+      ...(await input(companyId)),
       probedHermesModel: 'mistralai/mistral-large-2512',
       apply: true,
     });

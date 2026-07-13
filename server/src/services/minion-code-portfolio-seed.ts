@@ -20,6 +20,7 @@ import { MINION_DRONE_IDS, type MinionDroneId } from '@paperclipai/adapter-minio
 import { agentHarnessService } from './agent-harness.js';
 import { normalizeAgentPermissions } from './agent-permissions.js';
 import { agentService } from './agents.js';
+import { secretService } from './secrets.js';
 
 export const MINION_CODE_SEED_VERSION = 1;
 export const MINION_CODE_PORTFOLIO_SEED_KEY = 'minion-code:portfolio';
@@ -675,9 +676,7 @@ function validateRepositoryWorkspaces(
       throw new Error(`repository workspace ${key}.cwd must be an absolute path`);
     }
     if (!workspace.worktreeParentDir?.trim() || !isAbsolute(workspace.worktreeParentDir)) {
-      throw new Error(
-        `repository workspace ${key}.worktreeParentDir must be an absolute path`,
-      );
+      throw new Error(`repository workspace ${key}.worktreeParentDir must be an absolute path`);
     }
     if (!workspace.repoUrl?.trim()) {
       throw new Error(`repository workspace ${key}.repoUrl is required`);
@@ -711,20 +710,16 @@ export async function seedMinionCodePortfolio(
     existingWorkspaces,
     existingAgents,
     existingPipelines,
-  ] =
-    await Promise.all([
-      db.select().from(portfolios).where(eq(portfolios.companyId, input.companyId)),
-      db.select().from(projects).where(eq(projects.companyId, input.companyId)),
-      db
-        .select()
-        .from(projectWorkspaces)
-        .where(eq(projectWorkspaces.companyId, input.companyId)),
-      db.select().from(agents).where(eq(agents.companyId, input.companyId)),
-      db
-        .select()
-        .from(pipelines)
-        .where(and(eq(pipelines.companyId, input.companyId), isNull(pipelines.projectId))),
-    ]);
+  ] = await Promise.all([
+    db.select().from(portfolios).where(eq(portfolios.companyId, input.companyId)),
+    db.select().from(projects).where(eq(projects.companyId, input.companyId)),
+    db.select().from(projectWorkspaces).where(eq(projectWorkspaces.companyId, input.companyId)),
+    db.select().from(agents).where(eq(agents.companyId, input.companyId)),
+    db
+      .select()
+      .from(pipelines)
+      .where(and(eq(pipelines.companyId, input.companyId), isNull(pipelines.projectId))),
+  ]);
 
   const activeAgents = existingAgents.filter((agent) => agent.status !== 'terminated');
   const agentDefinitions = buildAgentDefinitions(input, gatewayUrl);
@@ -1033,20 +1028,33 @@ export async function seedMinionCodePortfolio(
     const operationFor = (resourceType: MinionCodeSeedResourceType, key: string) =>
       actions.find((action) => action.resourceType === resourceType && action.key === key)
         ?.operation;
+    const secrets = secretService(db);
     await db.transaction(async (tx) => {
       for (const plan of agentPlans) {
-        if (operationFor('agent', plan.definition.key) === 'unchanged') continue;
-        await tx
-          .insert(agents)
-          .values({
-            id: plan.id,
-            companyId: input.companyId,
-            ...plan.desired,
-          } as typeof agents.$inferInsert)
-          .onConflictDoUpdate({
-            target: agents.id,
-            set: { ...plan.desired, updatedAt: new Date() } as Partial<typeof agents.$inferInsert>,
-          });
+        if (operationFor('agent', plan.definition.key) !== 'unchanged') {
+          await tx
+            .insert(agents)
+            .values({
+              id: plan.id,
+              companyId: input.companyId,
+              ...plan.desired,
+            } as typeof agents.$inferInsert)
+            .onConflictDoUpdate({
+              target: agents.id,
+              set: { ...plan.desired, updatedAt: new Date() } as Partial<
+                typeof agents.$inferInsert
+              >,
+            });
+        }
+        const env = asRecord(plan.desired.adapterConfig).env;
+        if (env) {
+          await secrets.syncEnvBindingsForTarget(
+            input.companyId,
+            { targetType: 'agent', targetId: plan.id },
+            env,
+            { db: tx },
+          );
+        }
       }
 
       if (operationFor('portfolio', 'portfolio') !== 'unchanged') {
