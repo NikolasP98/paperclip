@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveEffectiveChain,
+  mergeAdapterChainLevelConfig,
   shouldAdvanceChain,
   classifyFallbackReason,
   parseQuotaResetAt,
@@ -26,6 +27,47 @@ describe("resolveEffectiveChain", () => {
 
   it("prepends primary to the fallback chain", () => {
     expect(resolveEffectiveChain(PRIMARY, [SEC, TER])).toEqual([PRIMARY, SEC, TER]);
+  });
+});
+
+describe("mergeAdapterChainLevelConfig", () => {
+  it("preserves the resolved primary env instead of restoring persisted bindings", () => {
+    const resolvedEnv = {
+      MINION_GATEWAY_URL: "wss://gateway.example.test/",
+      MINION_GATEWAY_TOKEN: "resolved-token",
+    };
+
+    const merged = mergeAdapterChainLevelConfig(
+      { droneId: "portfolio-issue-classifier-v1", env: resolvedEnv },
+      {
+        type: "minion_drone",
+        droneId: "portfolio-issue-classifier-v1",
+        env: {
+          MINION_GATEWAY_URL: {
+            type: "plain",
+            value: "wss://gateway.example.test/",
+          },
+          MINION_GATEWAY_TOKEN: {
+            type: "secret_ref",
+            secretId: "11111111-1111-4111-8111-111111111111",
+          },
+        },
+      },
+      0,
+    );
+
+    expect(merged.env).toBe(resolvedEnv);
+  });
+
+  it("keeps explicit fallback-level overrides", () => {
+    const fallbackEnv = { FALLBACK_TOKEN: "fallback" };
+    const merged = mergeAdapterChainLevelConfig(
+      { env: { PRIMARY_TOKEN: "primary" } },
+      { type: "process", env: fallbackEnv },
+      1,
+    );
+
+    expect(merged.env).toBe(fallbackEnv);
   });
 });
 

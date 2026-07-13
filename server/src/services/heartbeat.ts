@@ -192,6 +192,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   resolveEffectiveChain,
+  mergeAdapterChainLevelConfig,
   shouldAdvanceChain,
   classifyFallbackReason,
   parseQuotaResetAt,
@@ -9080,7 +9081,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
           );
         }
-        const levelRuntimeConfig = { ...runtimeConfig, ...entry };
+        const levelRuntimeConfig = mergeAdapterChainLevelConfig(
+          runtimeConfig,
+          entry,
+          activeIndex,
+        );
 
         adapterResult = await adapter.execute({
           runId: run.id,
