@@ -111,6 +111,36 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("keeps refined pipeline graph validation in the flat MCP create tool", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreatePipeline");
+    expect(tool.schema.shape).toHaveProperty("name");
+    expect(tool.schema.shape).toHaveProperty("companyId");
+
+    const response = await tool.execute({
+      name: "Invalid inline pipeline",
+      steps: [
+        {
+          key: "plan",
+          kind: "work",
+          label: "Plan",
+          participant: { type: "agent", agentId: "22222222-2222-2222-2222-222222222222" },
+        },
+        {
+          key: "implement",
+          kind: "work",
+          label: "Implement",
+          participant: { type: "agent", agentId: "22222222-2222-2222-2222-222222222222" },
+        },
+      ],
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("Inline pipelines allow exactly one work step");
+  });
+
   it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "issue-1", status: "todo" }),

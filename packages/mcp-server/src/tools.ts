@@ -103,6 +103,13 @@ const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createIssueInputSchema);
 
+// MCP tool registration consumes a plain Zod object shape. The shared pipeline
+// schema adds graph invariants with superRefine, so expose its underlying object
+// to MCP and run the refined schema again before sending the request.
+const createPipelineToolSchema = z.object({
+  companyId: companyIdOptional,
+}).merge(createPipelineSchema.innerType());
+
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(updateIssueSchema);
@@ -414,9 +421,11 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     makeTool(
       "paperclipCreatePipeline",
       "Create a workflow pipeline: ordered steps (work -> review/eval/approval gates), each owned by an agent or user; new issues matching its trigger get the pipeline applied",
-      z.object({ companyId: companyIdOptional }).merge(createPipelineSchema),
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/pipelines`, { body }),
+      createPipelineToolSchema,
+      async ({ companyId, ...input }) => {
+        const body = createPipelineSchema.parse(input);
+        return client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/pipelines`, { body });
+      },
     ),
     makeTool(
       "paperclipGetIssueWorkspaceRuntime",
