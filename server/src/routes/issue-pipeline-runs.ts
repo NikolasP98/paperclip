@@ -6,6 +6,7 @@ import type { IssuePipelineSnapshot, PipelineStep, PipelineTrigger } from "@pape
 import { issuePipelineOrchestrator } from "../services/issue-pipeline-orchestrator.js";
 import { issuePipelineOrchestratorRepository } from "../services/issue-pipeline-repository.js";
 import { assertCompanyAccess } from "./authz.js";
+import { assertPipelineHitlTerminalActor } from "../services/pipeline-inbox.js";
 
 const startPipelineRunSchema = z.object({
   pipelineId: z.string().uuid(),
@@ -167,6 +168,23 @@ export function issuePipelineRunRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
+    const [stageTask] = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.id, parsed.data.stageTaskId),
+          eq(issues.companyId, run.companyId),
+          eq(issues.originKind, "pipeline_step"),
+          eq(issues.originId, run.id),
+        ),
+      )
+      .limit(1);
+    if (!stageTask) {
+      res.status(404).json({ error: "Pipeline stage task not found" });
+      return;
+    }
+    await assertPipelineHitlTerminalActor(db, stageTask, req.actor);
     const repository = issuePipelineOrchestratorRepository(db);
     const updated = await issuePipelineOrchestrator(repository).completeStageTask({
       runId: run.id,

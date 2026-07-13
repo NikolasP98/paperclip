@@ -1453,6 +1453,8 @@ export type {
   IssuePipelineRoutingSnapshot,
   IssuePipelineRun,
   IssuePipelineSnapshot,
+  PipelineInboxItem,
+  PipelineInboxTarget,
   Pipeline,
   PipelineStep,
   PipelineStepParticipant,

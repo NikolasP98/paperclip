@@ -109,6 +109,7 @@ import {
   issuePipelineStageTraversalService,
   type IssuePipelineStageTraversalService,
 } from "../services/issue-pipeline-stage-traversal.js";
+import { assertPipelineHitlTerminalActor } from "../services/pipeline-inbox.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -5075,6 +5076,14 @@ export function issueRoutes(
       existing.assigneeAgentId,
       req.body.executionPolicy !== undefined && monitorChanged,
     );
+
+    if (
+      updateFields.status === "done" ||
+      updateFields.status === "blocked" ||
+      updateFields.status === "cancelled"
+    ) {
+      await assertPipelineHitlTerminalActor(db, existing, req.actor);
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,

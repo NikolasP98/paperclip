@@ -4,6 +4,7 @@ import { createPipelineSchema, updatePipelineSchema } from "./pipeline.js";
 
 const agent = (agentId: string) => ({ type: "agent" as const, agentId });
 const user = (userId: string) => ({ type: "user" as const, userId });
+const role = (...roleKeys: string[]) => ({ type: "role" as const, roleKeys });
 
 const planStep = {
   key: "plan",
@@ -81,6 +82,46 @@ describe("pipeline execution contracts", () => {
     });
 
     expect(parsed.steps[1]?.onFailStepKey).toBe("plan");
+  });
+
+  it("accepts bounded role-scoped HITL gates only in stage-task pipelines", () => {
+    const parsed = createPipelineSchema.parse({
+      name: "role governed plan",
+      executionMode: "stage_tasks",
+      steps: [
+        planStep,
+        {
+          key: "plan_approval",
+          kind: "approval",
+          label: "Approve plan",
+          participant: role("engineering_lead", "instance:admin"),
+        },
+      ],
+    });
+    expect(parsed.steps[1]?.participant).toEqual({
+      type: "role",
+      roleKeys: ["engineering_lead", "instance:admin"],
+    });
+
+    expect(() =>
+      createPipelineSchema.parse({
+        name: "inline role",
+        steps: [planStep, {
+          key: "approval",
+          kind: "approval",
+          label: "Approve",
+          participant: role("owner"),
+        }],
+      }),
+    ).toThrow(/Role participants require stage_tasks/);
+
+    expect(() =>
+      createPipelineSchema.parse({
+        name: "role worker",
+        executionMode: "stage_tasks",
+        steps: [{ ...planStep, participant: role("engineer") }],
+      }),
+    ).toThrow(/Work step participant must be an agent/);
   });
 
   it("requires retry fields together and points retries to an earlier work step", () => {

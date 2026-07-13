@@ -105,9 +105,15 @@ function participantAssignee(step: PipelineStep): {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 } {
-  return step.participant.type === "agent"
-    ? { assigneeAgentId: step.participant.agentId ?? null, assigneeUserId: null }
-    : { assigneeAgentId: null, assigneeUserId: step.participant.userId ?? null };
+  if (step.participant.type === "agent") {
+    return { assigneeAgentId: step.participant.agentId ?? null, assigneeUserId: null };
+  }
+  if (step.participant.type === "user") {
+    return { assigneeAgentId: null, assigneeUserId: step.participant.userId ?? null };
+  }
+  // A role gate is intentionally unassigned: its frozen roleKeys select the
+  // eligible Hub users without pretending one user has claimed it already.
+  return { assigneeAgentId: null, assigneeUserId: null };
 }
 
 class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchestratorRepository {

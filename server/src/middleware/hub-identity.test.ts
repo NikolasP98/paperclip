@@ -19,12 +19,16 @@ describe('hubIdentityMiddleware', () => {
     const mw = hubIdentityMiddleware({ secret: SECRET });
     const req: any = { headers: {}, path: '/health', get(name: string) { return req.headers[name.toLowerCase()]; } };
     req.headers['x-hub-identity'] = await tokenWith({
-      userId: 'u1', email: 'a@b.c', name: 'A', companyId: 'c1',
+      userId: 'u1', email: 'a@b.c', name: 'A', companyId: 'c1', roleKeys: ['engineering_lead', 'owner'],
     });
+    req.actor = { type: 'none', source: 'none' };
     const next = vi.fn();
     await mw(req, {} as any, next);
-    expect(req.user).toEqual({ id: 'u1', email: 'a@b.c', name: 'A' });
+    expect(req.user).toEqual({ id: 'u1', email: 'a@b.c', name: 'A', roleKeys: ['engineering_lead', 'owner'] });
     expect(req.companyId).toBe('c1');
+    expect(req.actor).toMatchObject({
+      type: 'board', userId: 'u1', companyIds: ['c1'], roleKeys: ['engineering_lead', 'owner'], source: 'hub_identity',
+    });
     expect(next).toHaveBeenCalledOnce();
   });
 
@@ -36,6 +40,29 @@ describe('hubIdentityMiddleware', () => {
     const res: any = { status, json };
     const next = vi.fn();
     await mw(req, res, next);
+    expect(status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('allows an already-authenticated bearer actor without Hub identity', async () => {
+    const mw = hubIdentityMiddleware({ secret: SECRET });
+    const req: any = { headers: {}, path: '/companies/c1/inbox', actor: { type: 'board', source: 'board_key' } };
+    const next = vi.fn();
+    await mw(req, {} as any, next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed role claims instead of accepting partial authority', async () => {
+    const mw = hubIdentityMiddleware({ secret: SECRET });
+    const req: any = {
+      headers: { 'x-hub-identity': await tokenWith({ userId: 'u1', companyId: 'c1', roleKeys: ['owner', 'not valid'] }) },
+      path: '/companies/c1/inbox',
+      actor: { type: 'none', source: 'none' },
+    };
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn();
+    const next = vi.fn();
+    await mw(req, { status, json } as any, next);
     expect(status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
   });

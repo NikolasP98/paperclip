@@ -2,8 +2,13 @@ import { z } from "zod";
 import { ISSUE_PRIORITIES, PIPELINE_EXECUTION_MODES, PIPELINE_STEP_KINDS } from "../constants.js";
 import { issueExecutionStagePrincipalSchema } from "./issue.js";
 
-/** Step participant — agent or user. Same shape/rules as an execution stage principal. */
-export const pipelineStepParticipantSchema = issueExecutionStagePrincipalSchema;
+const roleKeySchema = z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9][a-zA-Z0-9:_-]*$/);
+
+/** Role targets stay pipeline-local; inline issue execution principals remain agent/user only. */
+export const pipelineStepParticipantSchema = z.union([
+  issueExecutionStagePrincipalSchema,
+  z.object({ type: z.literal("role"), roleKeys: z.array(roleKeySchema).min(1).max(20) }).strict(),
+]);
 
 const pipelineStepBaseSchema = z.object({
   key: z.string().trim().min(1).max(64),
@@ -94,6 +99,24 @@ function validatePipelineSteps(
       message: "Inline pipelines allow exactly one work step, at position 0",
       path: [],
     });
+  }
+
+  for (const [index, step] of steps.entries()) {
+    if (step.participant.type !== "role") continue;
+    if (executionMode !== "stage_tasks") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Role participants require stage_tasks execution mode",
+        path: [index, "participant", "type"],
+      });
+    }
+    if (step.kind !== "eval" && step.kind !== "approval") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Role participants are only supported on eval or approval gates",
+        path: [index, "participant", "type"],
+      });
+    }
   }
 
   for (const [index, step] of steps.entries()) {

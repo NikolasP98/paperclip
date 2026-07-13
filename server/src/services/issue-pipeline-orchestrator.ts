@@ -160,6 +160,20 @@ function assertPipeline(pipeline: IssuePipelineSnapshot): void {
     if (!stage.key.trim()) throw new Error("pipeline stage key is required");
     if (stageKeys.has(stage.key)) throw new Error(`duplicate pipeline stage key: ${stage.key}`);
     stageKeys.add(stage.key);
+    if (stage.participant.type === "role") {
+      if (stage.kind !== "eval" && stage.kind !== "approval") {
+        throw new Error(`role participant is not allowed on ${stage.kind} stage ${stage.key}`);
+      }
+      if (
+        stage.participant.roleKeys.length === 0 ||
+        stage.participant.roleKeys.length > 20 ||
+        stage.participant.roleKeys.some(
+          (roleKey) => !/^[a-zA-Z0-9][a-zA-Z0-9:_-]*$/.test(roleKey) || roleKey.length > 80,
+        )
+      ) {
+        throw new Error(`role participant on stage ${stage.key} has invalid roleKeys`);
+      }
+    }
     if (stage.kind === "eval") {
       if (typeof stage.minScore !== "number") throw new Error(`eval stage ${stage.key} requires minScore`);
       if (typeof stage.maxScore !== "number") throw new Error(`eval stage ${stage.key} requires maxScore`);

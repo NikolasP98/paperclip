@@ -5,10 +5,17 @@ import type {
   PipelineStepKind,
 } from "../constants.js";
 import type { IssueOriginKind, IssuePriority } from "../constants.js";
-import type { IssueExecutionStagePrincipal } from "./issue.js";
-
-/** Step participant — an agent or a user (user step = HITL gate). Same shape as an execution stage principal. */
-export type PipelineStepParticipant = IssueExecutionStagePrincipal;
+/**
+ * A frozen pipeline participant.
+ *
+ * Role targets are intentionally pipeline-only. They must never leak into the
+ * inline issue execution-policy principal, whose single agent/user assignee
+ * semantics are relied on throughout the core issue state machine.
+ */
+export type PipelineStepParticipant =
+  | { type: "agent"; agentId?: string | null; userId?: string | null; roleKeys?: never }
+  | { type: "user"; userId?: string | null; agentId?: string | null; roleKeys?: never }
+  | { type: "role"; roleKeys: string[]; agentId?: never; userId?: never };
 
 export interface PipelineStep {
   key: string;
@@ -134,4 +141,34 @@ export interface IssuePipelineEvent {
   maxScore: number | null;
   occurredAt: Date;
   createdAt: Date;
+}
+
+export type PipelineInboxTarget =
+  | { type: "user"; userId: string }
+  | { type: "role"; roleKeys: string[] };
+
+/** Actor-scoped actionable HITL child returned by the company Inbox API. */
+export interface PipelineInboxItem {
+  id: string;
+  type: "approval";
+  issueId: string;
+  rootIssueId: string;
+  runId: string;
+  pipelineId: string | null;
+  pipelineName: string;
+  projectId: string | null;
+  stageKey: string;
+  stageKind: "eval" | "approval";
+  stageLabel: string;
+  attempt: number;
+  status: "todo" | "in_progress" | "in_review";
+  title: string;
+  description: string | null;
+  href: string;
+  target: PipelineInboxTarget;
+  /** Compatibility fields for consumers that flatten the target. */
+  participantUserId: string | null;
+  participantRoleKeys: string[];
+  createdAt: Date;
+  updatedAt: Date;
 }

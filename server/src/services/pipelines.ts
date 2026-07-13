@@ -85,6 +85,9 @@ export function compilePipeline(pipeline: Pipeline): CompiledPipeline {
 }
 
 function buildCompiledStage(step: PipelineStep): IssueExecutionStage {
+  if (step.participant.type === "role") {
+    throw new Error("Role participants cannot be compiled into inline issue execution policies");
+  }
   const participant: IssueExecutionStageParticipant = {
     id: randomUUID(),
     type: step.participant.type,

@@ -31,6 +31,7 @@ export type AuthorizationActor =
     source?:
       | "local_implicit"
       | "session"
+      | "hub_identity"
       | "board_key"
       | "agent_key"
       | "agent_jwt"
