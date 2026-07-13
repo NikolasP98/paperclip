@@ -194,6 +194,24 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("registers minion_drone as a bounded cancellable gateway adapter", async () => {
+    const adapter = requireServerAdapter("minion_drone");
+
+    expect(adapter.cancelRun).toBeTypeOf("function");
+    expect(adapter.supportsLocalAgentJwt).toBe(false);
+    expect(adapter.supportsInstructionsBundle).toBe(false);
+    expect(adapter.getConfigSchema?.()).toEqual({
+      fields: [
+        expect.objectContaining({
+          key: "droneId",
+          type: "select",
+          required: true,
+        }),
+      ],
+    });
+    await expect(listAdapterModels("minion_drone")).resolves.toEqual([]);
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({

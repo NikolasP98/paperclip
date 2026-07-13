@@ -11050,6 +11050,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  async function cancelAdapterOwnedRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "resolvedAdapterType">,
+    fallbackAdapterType: string,
+    reason: string,
+  ) {
+    const adapterType = run.resolvedAdapterType ?? fallbackAdapterType;
+    const adapter = getServerAdapter(adapterType);
+    if (!adapter.cancelRun) return;
+    try {
+      await adapter.cancelRun(run.id, reason);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: run.id, adapterType },
+        "adapter-owned run cancellation failed; continuing control-plane cancellation",
+      );
+    }
+  }
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -11066,6 +11084,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(options.resultJson ?? {}),
         }
       : options.resultJson;
+
+    if (agent) {
+      await cancelAdapterOwnedRun(run, agent.adapterType, reason);
+    }
 
     const running = runningProcesses.get(run.id);
     try {
@@ -11122,6 +11144,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      if (agent) {
+        await cancelAdapterOwnedRun(run, agent.adapterType, reason);
+      }
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,

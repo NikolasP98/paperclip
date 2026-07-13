@@ -55,6 +55,7 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const mockAdapterCancelRun = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -88,6 +89,7 @@ vi.mock("../adapters/index.ts", async () => {
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
+      cancelRun: mockAdapterCancelRun,
     })),
   };
 });
@@ -302,6 +304,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       provider: "test",
       model: "test-model",
     }));
+    mockAdapterCancelRun.mockResolvedValue(undefined);
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -1955,6 +1958,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    expect(mockAdapterCancelRun).toHaveBeenCalledWith(runId, "Cancelled by control plane");
   });
 
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {
