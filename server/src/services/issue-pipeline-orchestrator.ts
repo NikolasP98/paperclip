@@ -6,6 +6,7 @@ import type {
   IssuePipelineSnapshot,
   PipelineStep,
 } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 
 export type StageTaskStatus =
   | "backlog"
@@ -115,6 +116,13 @@ export interface CompleteStageTaskInput {
   score?: number | null;
   maxScore?: number | null;
   summary?: string | null;
+}
+
+export interface CompleteStageTaskTransition {
+  /** True only for the caller that claimed the stage-terminal event under the run lock. */
+  claimed: boolean;
+  /** The next task created by this transition, when the run advanced to another stage. */
+  nextStageTask: IssuePipelineStageTask | null;
 }
 
 export interface IssuePipelineOrchestratorOptions {
@@ -294,7 +302,10 @@ export function issuePipelineOrchestrator(
       });
     },
 
-    completeStageTask: async (input: CompleteStageTaskInput): Promise<IssuePipelineRun> =>
+    completeStageTask: async (
+      input: CompleteStageTaskInput,
+      observeTransition?: (transition: CompleteStageTaskTransition) => void,
+    ): Promise<IssuePipelineRun> =>
       repository.withRunLock(input.runId, async (stageRepository) => {
         const run = await stageRepository.getRun(input.runId);
         if (!run) throw new Error(`pipeline run not found: ${input.runId}`);
@@ -303,6 +314,15 @@ export function issuePipelineOrchestrator(
         const task = tasks.find((candidate) => candidate.id === input.stageTaskId);
         if (!task) throw new Error(`stage task ${input.stageTaskId} does not belong to run ${run.id}`);
         const stage = stageByKey(run, task.stageKey);
+        if (stage.kind === "approval") {
+          if (!input.summary?.trim()) {
+            throw unprocessable(`approval stage ${stage.key} requires a pipeline summary`);
+          }
+          if (input.terminalStatus === "done" && !input.outcome) {
+            throw unprocessable(`approval stage ${stage.key} requires a passed or failed pipeline outcome`);
+          }
+        }
+        const effectiveMaxScore = input.maxScore ?? (stage.kind === "eval" ? stage.maxScore ?? null : null);
         const evalFailed =
           stage.kind === "eval" &&
           (typeof input.score !== "number" || input.score < (stage.minScore ?? Number.POSITIVE_INFINITY));
@@ -325,40 +345,56 @@ export function issuePipelineOrchestrator(
             summary: input.summary ?? null,
           },
           score: input.score ?? null,
-          maxScore: input.maxScore ?? null,
+          maxScore: effectiveMaxScore,
         });
-        if (!claimed) return run;
+        if (!claimed) {
+          observeTransition?.({ claimed: false, nextStageTask: null });
+          return run;
+        }
 
-        if (run.status !== "active") return run;
+        const finish = (updatedRun: IssuePipelineRun, nextStageTask: IssuePipelineStageTask | null = null) => {
+          observeTransition?.({ claimed: true, nextStageTask });
+          return updatedRun;
+        };
+
+        if (run.status !== "active") return finish(run);
         if (run.currentStepKey !== task.stageKey) {
           throw new Error(`stage task ${task.id} is not current for run ${run.id}`);
         }
 
         if (input.terminalStatus === "blocked") {
-          return blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} is blocked`, task);
+          return finish(
+            await blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} is blocked`, task),
+          );
         }
         if (input.terminalStatus === "cancelled") {
-          return blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} was cancelled`, task);
+          return finish(
+            await blockRun(stageRepository, run, input.summary?.trim() || `${task.stageKey} was cancelled`, task),
+          );
         }
 
         if (failed) {
           if (!stage.onFailStepKey) {
-            return blockRun(
-              stageRepository,
-              run,
-              input.summary?.trim() || `${stage.label} failed without a retry route`,
-              task,
+            return finish(
+              await blockRun(
+                stageRepository,
+                run,
+                input.summary?.trim() || `${stage.label} failed without a retry route`,
+                task,
+              ),
             );
           }
           const retryStage = stageByKey(run, stage.onFailStepKey);
           const completedAttempts = stageAttempt(tasks, retryStage.key);
           const maxAttempts = stage.maxAttempts ?? 1;
           if (completedAttempts >= maxAttempts) {
-            return blockRun(
-              stageRepository,
-              run,
-              `${stage.label} failed and ${retryStage.label} exhausted ${maxAttempts} attempts`,
-              task,
+            return finish(
+              await blockRun(
+                stageRepository,
+                run,
+                `${stage.label} failed and ${retryStage.label} exhausted ${maxAttempts} attempts`,
+                task,
+              ),
             );
           }
           const nextAttempt = completedAttempts + 1;
@@ -374,10 +410,10 @@ export function issuePipelineOrchestrator(
             attempt: nextAttempt,
             outputSnapshot: { failedStepKey: stage.key },
             score: input.score ?? null,
-            maxScore: input.maxScore ?? null,
+            maxScore: effectiveMaxScore,
           });
-          await materializeStage(stageRepository, advanced, retryStage, nextAttempt);
-          return advanced;
+          const nextStageTask = await materializeStage(stageRepository, advanced, retryStage, nextAttempt);
+          return finish(advanced, nextStageTask);
         }
 
         const followingStage = nextStage(run, stage.key);
@@ -398,13 +434,13 @@ export function issuePipelineOrchestrator(
             stepKey: task.stageKey,
             attempt: task.attempt,
           });
-          return completed;
+          return finish(completed);
         }
 
         const attempt = stageAttempt(tasks, followingStage.key) + 1;
         const advanced = await stageRepository.setRunCursor(run.id, followingStage.key);
-        await materializeStage(stageRepository, advanced, followingStage, attempt);
-        return advanced;
+        const nextStageTask = await materializeStage(stageRepository, advanced, followingStage, attempt);
+        return finish(advanced, nextStageTask);
       }),
   };
 }

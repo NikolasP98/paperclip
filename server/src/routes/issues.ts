@@ -105,6 +105,10 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  issuePipelineStageTraversalService,
+  type IssuePipelineStageTraversalService,
+} from "../services/issue-pipeline-stage-traversal.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -1029,6 +1033,7 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    pipelineStageTraversal?: IssuePipelineStageTraversalService;
   } = {},
 ) {
   const router = Router();
@@ -1037,6 +1042,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const pipelineStageTraversal = opts.pipelineStageTraversal ?? issuePipelineStageTraversalService(db, { heartbeat });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -4875,6 +4881,10 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      evalScore,
+      feedbackScore,
+      pipelineOutcome,
+      pipelineSummary,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -5083,8 +5093,8 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-      evalScore: req.body.evalScore === undefined ? undefined : (req.body.evalScore as number),
-      feedbackScore: req.body.feedbackScore === undefined ? undefined : (req.body.feedbackScore as number),
+      evalScore,
+      feedbackScore,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -5647,6 +5657,17 @@ export function issueRoutes(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
+    }
+
+    if (req.body.status !== undefined) {
+      await pipelineStageTraversal.afterCommittedIssueMutation({
+        issue,
+        pipelineOutcome,
+        pipelineSummary,
+        evalScore,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
     }
 
     const assigneeChanged =

@@ -167,7 +167,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(opts: Parameters<typeof import("../routes/issues.js")["issueRoutes"]>[2] = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -184,7 +184,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes({} as any, {} as any, opts));
   app.use(errorHandler);
   return app;
 }
@@ -223,6 +223,56 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+  });
+
+  it("hands committed pipeline-stage PATCH metadata to the traversal service without persisting transient fields", async () => {
+    const existing = makeIssue({
+      originKind: "pipeline_step",
+      originId: "44444444-4444-4444-8444-444444444444",
+      status: "in_review",
+    });
+    const updated = makeIssue({
+      originKind: "pipeline_step",
+      originId: "44444444-4444-4444-8444-444444444444",
+      status: "done",
+    });
+    const afterCommittedIssueMutation = vi.fn(async () => ({
+      handled: true,
+      claimed: true,
+      run: null,
+      nextStageTask: null,
+    }));
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp({
+      pipelineStageTraversal: { afterCommittedIssueMutation },
+    } as never))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        pipelineOutcome: "failed",
+        pipelineSummary: "Evaluator requested another implementation pass",
+        evalScore: 6,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.not.objectContaining({
+        pipelineOutcome: expect.anything(),
+        pipelineSummary: expect.anything(),
+        evalScore: expect.anything(),
+      }),
+    );
+    expect(afterCommittedIssueMutation).toHaveBeenCalledWith({
+      issue: updated,
+      pipelineOutcome: "failed",
+      pipelineSummary: "Evaluator requested another implementation pass",
+      evalScore: 6,
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

@@ -201,7 +201,12 @@ async function startAndCompleteThroughEvaluate(
   });
   for (const stageKey of ["plan", "plan-approval", "implement"] as const) {
     const task = repository.tasks.findLast((candidate) => candidate.stageKey === stageKey)!;
-    await orchestrator.completeStageTask({ runId: "run-1", stageTaskId: task.id, terminalStatus: "done" });
+    await orchestrator.completeStageTask({
+      runId: "run-1",
+      stageTaskId: task.id,
+      terminalStatus: "done",
+      ...(stageKey === "plan-approval" ? { outcome: "passed" as const, summary: "Plan approved" } : {}),
+    });
   }
   return repository.tasks.findLast((task) => task.stageKey === "evaluate")!;
 }
@@ -296,6 +301,45 @@ describe("issuePipelineOrchestrator", () => {
     expect(repository.tasks.map((task) => [task.stageKey, task.attempt])).toContainEqual(["implement", 2]);
   });
 
+  it("requires typed outcome and summary evidence before completing a human approval stage", async () => {
+    const { repository, orchestrator } = setup();
+    await orchestrator.start({
+      companyId: "company-1",
+      selectedProjectId: "project-1",
+      issueId: "main-issue-1",
+      sourceKey: "approval-evidence",
+      pipelineSnapshot: pipeline,
+    });
+    await orchestrator.completeStageTask({
+      runId: "run-1",
+      stageTaskId: repository.tasks[0]!.id,
+      terminalStatus: "done",
+    });
+    const approvalTask = repository.tasks.findLast((task) => task.stageKey === "plan-approval")!;
+
+    await expect(orchestrator.completeStageTask({
+      runId: "run-1",
+      stageTaskId: approvalTask.id,
+      terminalStatus: "done",
+      outcome: "passed",
+    })).rejects.toMatchObject({ status: 422 });
+    await expect(orchestrator.completeStageTask({
+      runId: "run-1",
+      stageTaskId: approvalTask.id,
+      terminalStatus: "done",
+      summary: "Approved",
+    })).rejects.toMatchObject({ status: 422 });
+
+    const advanced = await orchestrator.completeStageTask({
+      runId: "run-1",
+      stageTaskId: approvalTask.id,
+      terminalStatus: "done",
+      outcome: "passed",
+      summary: "Plan approved by the operator",
+    });
+    expect(advanced.currentStepKey).toBe("implement");
+  });
+
   it("blocks the main task visibly when the evaluator exhausts implementation attempts", async () => {
     const { repository, orchestrator } = setup();
     const firstEvaluateTask = await startAndCompleteThroughEvaluate(repository, orchestrator);
@@ -337,7 +381,12 @@ describe("issuePipelineOrchestrator", () => {
     });
     for (const stageKey of ["merge-approval", "merge"] as const) {
       const task = repository.tasks.findLast((candidate) => candidate.stageKey === stageKey)!;
-      await orchestrator.completeStageTask({ runId: "run-1", stageTaskId: task.id, terminalStatus: "done" });
+      await orchestrator.completeStageTask({
+        runId: "run-1",
+        stageTaskId: task.id,
+        terminalStatus: "done",
+        ...(stageKey === "merge-approval" ? { outcome: "passed" as const, summary: "Merge approved" } : {}),
+      });
     }
 
     expect(repository.runs.get("run-1")?.status).toBe("completed");

@@ -52,6 +52,30 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("forwards typed pipeline completion metadata through the issue PATCH tool", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "PAP-1135", status: "done" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipUpdateIssue");
+    await tool.execute({
+      issueId: "PAP-1135",
+      status: "done",
+      pipelineOutcome: "failed",
+      pipelineSummary: "Evaluator found a regression",
+      evalScore: 6,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({
+      status: "done",
+      pipelineOutcome: "failed",
+      pipelineSummary: "Evaluator found a regression",
+      evalScore: 6,
+    });
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),

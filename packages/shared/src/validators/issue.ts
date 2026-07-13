@@ -453,6 +453,10 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   evalScore: z.number().finite().optional(),
   /** Optional 0-10 feedback on non-eval review and approval decisions. */
   feedbackScore: z.number().finite().min(0).max(10).optional(),
+  /** Typed stage result used by stage-task pipelines, including human approval/rejection gates. */
+  pipelineOutcome: z.enum(["passed", "failed"]).optional(),
+  /** Concise stage output or blocker explanation recorded on the immutable pipeline event. */
+  pipelineSummary: z.string().trim().max(4_000).optional().nullable(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
