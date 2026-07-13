@@ -397,7 +397,7 @@ export async function createApp(
   }
   const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
   if (HUB_PAPERCLIP_SHARED_SECRET) {
-    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET }));
+    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET, db }));
   }
   app.use("/api", api);
   app.use("/api", (_req, res) => {
