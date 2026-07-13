@@ -521,7 +521,8 @@ function buildAgentDefinitions(
         'Implements approved specs in isolated workspaces, verifies the fix, and opens draft pull requests without merging.',
       adapterType: 'opencode_local',
       adapterConfig: {
-        model: 'github-copilot/claude-sonnet-5',
+        model: 'openrouter/anthropic/claude-sonnet-5',
+        provider: 'openrouter',
         dangerouslySkipPermissions: true,
       },
       status: 'idle',

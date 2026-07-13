@@ -23,7 +23,8 @@ describe("agent living harness", () => {
     });
     expect(implementer.runtime.recommended.primary).toMatchObject({
       adapterType: "opencode_local",
-      model: "github-copilot/claude-sonnet-5",
+      model: "openrouter/anthropic/claude-sonnet-5",
+      provider: "openrouter",
     });
     expect(implementer.runtime.recommended.fallbacks[0]).toMatchObject({
       adapterType: "codex_local",

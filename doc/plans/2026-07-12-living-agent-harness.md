@@ -217,6 +217,7 @@ On 2026-07-12 the production adapter model endpoint returned these relevant mode
 - Claude local: `claude-opus-4-8`, `claude-fable-5`, `claude-mythos-5`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5`.
 - Codex local: `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5`, `o3`, `o4-mini`, `gpt-5-mini`, `gpt-5-nano`, `o3-mini`, `codex-mini-latest`.
 - OpenCode discovery included, among others, `github-copilot/claude-fable-5`, `github-copilot/claude-sonnet-5`, `github-copilot/gpt-5.5`, `github-copilot/gpt-5.6-terra`, `github-copilot/gpt-5.6-sol`, `github-copilot/gpt-5.6-luna`, `github-copilot/gpt-5.4-mini`, `github-copilot/gpt-5.4-nano`, plus OpenRouter and free OpenCode models.
+- Model discovery is not an authentication guarantee. The production OpenCode runtime does not support GitHub Copilot through the available PAT transport, so the implementer uses the supported OpenRouter provider and `openrouter/anthropic/claude-sonnet-5` model.
 - Hermes returned an empty model list. Do not assign a Hermes model until its environment probe/detection returns a concrete model.
 
 “Returned by the model endpoint” means adapter-reported availability on that deployment. It does not guarantee provider entitlement forever. Every promotion validates the selected primary and fallback models in the target environment.
@@ -237,7 +238,7 @@ Sticker price, vendor tier labels, or model-name suffixes are not sufficient rou
 |---|---|---|---|
 | Intake classifier | `minion_drone:anthropic/claude-haiku-4-6` | `claude_local:claude-haiku-4-6`; cost canary `minion_drone:openrouter/google/gemini-2.5-flash` | Typed taxonomy only; deterministic service applies labels and routing |
 | Spec/planner | `minion_drone:anthropic/claude-opus-4-8` after bridge | `claude_local:claude-opus-4-8`; canary `opencode_local:github-copilot/claude-fable-5` | Reads issue/project SDK context; emits typed plan and child specs; no code mutation. Fable/other alternatives earn use only from cost-per-accepted-plan evidence |
-| Implementer | `opencode_local:github-copilot/claude-sonnet-5` | `codex_local:gpt-5.3-codex` -> `claude_local:claude-sonnet-4-6` | Own isolated workspace; implement/test/push issue branch and draft PR; never merge |
+| Implementer | `opencode_local:openrouter/anthropic/claude-sonnet-5` (provider `openrouter`) | `codex_local:gpt-5.3-codex` -> `claude_local:claude-sonnet-4-6` | Own isolated workspace; implement/test/push issue branch and draft PR; never merge |
 | Evaluator | `codex_local:gpt-5.4` with read-only tools | drone scoring canary `minion_drone:openai/gpt-5.4`; fallback `claude_local:claude-opus-4-8` | Independent rubric score; no code mutation; failed score appends spec delta and creates a new implementation iteration |
 | Code merger | `minion_drone:anthropic/claude-haiku-4-6` for readiness only | `claude_local:claude-haiku-4-6` readiness fallback | Runs only after release HITL; deterministic merge executor verifies approved head SHA and performs merge |
 | Portfolio monitor | `minion_drone:openrouter/google/gemini-2.5-flash` after bridge | current executable canary `opencode_local:github-copilot/gpt-5.4-mini` | Read-only, deduped remediation, hard spend and breadth limits |

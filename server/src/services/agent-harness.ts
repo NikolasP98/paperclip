@@ -316,8 +316,8 @@ export function harnessPolicyPreset(agent: {
       ? {
           primary: selection(
             "opencode_local",
-            "github-copilot/claude-sonnet-5",
-            "github-copilot",
+            "openrouter/anthropic/claude-sonnet-5",
+            "openrouter",
           ),
           fallbacks: [
             selection("codex_local", "gpt-5.3-codex", "openai"),

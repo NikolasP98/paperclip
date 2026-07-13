@@ -298,6 +298,13 @@ describeDb('MINION Code portfolio seed', () => {
     expect(bySeedKey.get('minion-code:agent:merger')?.adapterConfig).toMatchObject({
       droneId: 'portfolio-merge-readiness-v1',
     });
+    expect(bySeedKey.get('minion-code:agent:implementer')).toMatchObject({
+      adapterType: 'opencode_local',
+      adapterConfig: {
+        model: 'openrouter/anthropic/claude-sonnet-5',
+        provider: 'openrouter',
+      },
+    });
     expect(bySeedKey.get('minion-code:agent:monitor')).toMatchObject({
       adapterType: 'opencode_local',
       adapterConfig: { model: 'github-copilot/gpt-5.4-mini' },
@@ -403,7 +410,10 @@ describeDb('MINION Code portfolio seed', () => {
     expect(implementer).toMatchObject({
       name: 'bug-fixer',
       adapterType: 'opencode_local',
-      adapterConfig: { model: 'github-copilot/claude-sonnet-5' },
+      adapterConfig: {
+        model: 'openrouter/anthropic/claude-sonnet-5',
+        provider: 'openrouter',
+      },
     });
     expect(implementer?.metadata).toMatchObject({ minionSeedKey: 'minion-code:agent:implementer' });
     expect(evaluator).toMatchObject({ name: 'code-evaluator', adapterType: 'codex_local' });
