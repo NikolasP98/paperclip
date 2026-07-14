@@ -1303,22 +1303,31 @@ async function createNewProjectFromDecision(input: {
   let workspace = created.primaryWorkspace;
   if (!workspace && templateProject.primaryWorkspace) {
     const source = templateProject.primaryWorkspace;
-    workspace = await projectService(input.db).createWorkspace(created.id, {
-      name: `${created.name} primary`,
-      sourceType: source.sourceType,
-      cwd: source.cwd,
-      repoUrl: source.repoUrl,
-      repoRef: source.repoRef,
-      defaultRef: source.defaultRef,
-      visibility: source.visibility,
-      setupCommand: source.setupCommand,
-      cleanupCommand: source.cleanupCommand,
-      remoteProvider: source.remoteProvider,
-      remoteWorkspaceRef: source.remoteWorkspaceRef,
-      sharedWorkspaceKey: source.sharedWorkspaceKey,
-      metadata: source.metadata,
-      isPrimary: true,
-    });
+    const workspaceId = stableFactoryWorkspaceId(input.companyId, input.rootIssueId);
+    try {
+      workspace = await projectService(input.db).createWorkspace(created.id, {
+        id: workspaceId,
+        name: `${created.name} primary`,
+        sourceType: source.sourceType,
+        cwd: source.cwd,
+        repoUrl: source.repoUrl,
+        repoRef: source.repoRef,
+        defaultRef: source.defaultRef,
+        visibility: source.visibility,
+        setupCommand: source.setupCommand,
+        cleanupCommand: source.cleanupCommand,
+        remoteProvider: source.remoteProvider,
+        remoteWorkspaceRef: source.remoteWorkspaceRef,
+        sharedWorkspaceKey: source.sharedWorkspaceKey,
+        metadata: source.metadata,
+        isPrimary: true,
+      });
+    } catch (error) {
+      if (postgresErrorCode(error) !== '23505') throw error;
+      const raced = await projectService(input.db).getById(created.id);
+      workspace = raced?.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
+      if (!workspace) throw error;
+    }
   }
   if (workspace && templateProject.executionWorkspacePolicy) {
     await projectService(input.db).update(created.id, {
@@ -1334,9 +1343,21 @@ async function createNewProjectFromDecision(input: {
 }
 
 function stableFactoryProjectId(companyId: string, rootIssueId: string): string {
+  return stableFactoryResourceId('project', companyId, rootIssueId);
+}
+
+function stableFactoryWorkspaceId(companyId: string, rootIssueId: string): string {
+  return stableFactoryResourceId('primary-workspace', companyId, rootIssueId);
+}
+
+function stableFactoryResourceId(
+  resource: 'project' | 'primary-workspace',
+  companyId: string,
+  rootIssueId: string,
+): string {
   const bytes = Buffer.from(
     createHash('sha256')
-      .update(`factory-project:${companyId}:${rootIssueId}`)
+      .update(`factory-${resource}:${companyId}:${rootIssueId}`)
       .digest()
       .subarray(0, 16),
   );

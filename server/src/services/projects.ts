@@ -44,6 +44,7 @@ type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
+  id?: string;
   name?: string | null;
   sourceType?: string | null;
   cwd?: string | null;
@@ -958,6 +959,7 @@ export function projectService(db: Db) {
         const row = await tx
           .insert(projectWorkspaces)
           .values({
+            id: data.id,
             companyId: project.companyId,
             projectId,
             name,

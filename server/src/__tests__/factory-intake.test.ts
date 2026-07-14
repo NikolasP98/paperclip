@@ -449,6 +449,54 @@ describeDb('conversational factory intake', () => {
     expect(delivery[0]!.currentStepKey).toBe('build');
   });
 
+  it('creates one project, primary workspace, and delivery under matching new-project replays', async () => {
+    const scenario = await seedFactory();
+    const started = await activate(scenario, {
+      routingTarget: { type: 'role', roleKeys: ['owner'] },
+    });
+    await finishClassifier(scenario, started.rootIssue.id, 0.2);
+    const decide = (userId: string) =>
+      decideFactoryIntakeRouting({
+        db,
+        heartbeat,
+        issueId: started.rootIssue.id,
+        actor: { type: 'board', userId, source: 'hub_identity', roleKeys: ['owner'] },
+        decision: {
+          decision: {
+            kind: 'new_project',
+            name: 'Agent Bubble',
+            repositoryKey: 'minion-hub',
+            scopes: ['workforce', 'ui'],
+          },
+        },
+      });
+
+    const outcomes = await Promise.allSettled([decide('role-user-1'), decide('role-user-2')]);
+    expect(outcomes.every((outcome) => outcome.status === 'fulfilled')).toBe(true);
+
+    const createdProjects = await db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.companyId, scenario.companyId), eq(projects.name, 'Agent Bubble')));
+    expect(createdProjects).toHaveLength(1);
+    const workspaces = await db
+      .select()
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, createdProjects[0]!.id));
+    expect(workspaces).toHaveLength(1);
+    expect(workspaces[0]!.isPrimary).toBe(true);
+    const deliveries = await db
+      .select()
+      .from(issuePipelineRuns)
+      .where(
+        and(
+          eq(issuePipelineRuns.issueId, started.rootIssue.id),
+          like(issuePipelineRuns.sourceOriginId, 'factory-delivery:%'),
+        ),
+      );
+    expect(deliveries).toHaveLength(1);
+  });
+
   it('does not regress a completed delivery when periodic reconciliation revisits the scout', async () => {
     const scenario = await seedFactory();
     const started = await activate(scenario);
