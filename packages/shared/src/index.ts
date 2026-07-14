@@ -1447,6 +1447,7 @@ export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
 
 export type { Portfolio } from "./types/portfolio.js";
 export type * from "./types/agent-harness.js";
+export type * from "./types/factory-intake.js";
 export type {
   IssuePipelineEvent,
   IssuePipelineRouteCandidate,
@@ -1481,6 +1482,15 @@ export {
   type CreatePortfolio,
   type UpdatePortfolio,
 } from "./validators/portfolio.js";
+
+export {
+  factoryIntakeSourceSchema,
+  factoryRoutingTargetSchema,
+  createFactoryIntakeSchema,
+  decideFactoryIntakeRoutingSchema,
+  type CreateFactoryIntake,
+  type DecideFactoryIntakeRouting,
+} from "./validators/factory-intake.js";
 
 export {
   agentHarnessRoleKeySchema,

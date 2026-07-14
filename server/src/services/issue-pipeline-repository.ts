@@ -272,10 +272,6 @@ class DrizzleIssuePipelineOrchestratorRepository implements IssuePipelineOrchest
           `pipeline source ${input.sourceKey} is already routed to project ${existing.selectedProjectId}`,
         );
       }
-      await tx
-        .update(issues)
-        .set({ projectId: selectedProject.id, updatedAt: now })
-        .where(and(eq(issues.id, root.id), eq(issues.companyId, input.companyId)));
       return { run: asRun(existing), created: false };
     });
   }

@@ -65,6 +65,7 @@ import {
   hasValidPipelineDroneStageContext,
   reconcilePipelineDroneRuns,
 } from "./issue-pipeline-drone-stages.js";
+import { finalizeFactoryIntakeScoutHeartbeat, reconcileFactoryIntakeRuns } from "./factory-intake.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -7579,6 +7580,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "failed to finalize reaped GitHub classifier heartbeat",
         );
       });
+      await finalizeFactoryIntakeScoutHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped factory intake classifier heartbeat",
+        );
+      });
       await finalizePipelineDroneHeartbeat({
         db,
         heartbeat: { wakeup: enqueueWakeup },
@@ -9614,6 +9625,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 "failed to finalize GitHub classifier heartbeat",
               );
             });
+            await finalizeFactoryIntakeScoutHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize factory intake classifier heartbeat",
+              );
+            });
             await finalizePipelineDroneHeartbeat({
               db,
               heartbeat: { wakeup: enqueueWakeup },
@@ -11624,6 +11645,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileGithubClassifierIntake: (companyId?: string) =>
       reconcileGithubClassifierRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
+    reconcileFactoryIntakes: (companyId?: string) =>
+      reconcileFactoryIntakeRuns({
         db,
         heartbeat: { wakeup: enqueueWakeup },
         companyId,

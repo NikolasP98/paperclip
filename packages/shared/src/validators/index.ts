@@ -546,6 +546,15 @@ export {
 } from "./portfolio.js";
 
 export {
+  factoryIntakeSourceSchema,
+  factoryRoutingTargetSchema,
+  createFactoryIntakeSchema,
+  decideFactoryIntakeRoutingSchema,
+  type CreateFactoryIntake,
+  type DecideFactoryIntakeRouting,
+} from "./factory-intake.js";
+
+export {
   agentHarnessRoleKeySchema,
   agentHarnessIdsQuerySchema,
   createHarnessCapabilityProposalSchema,

@@ -484,6 +484,7 @@ export type {
 } from "./resource-memberships.js";
 export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
 export type { InboxDismissal } from "./inbox-dismissal.js";
+export type * from "./factory-intake.js";
 export type {
   AccessUserProfile,
   CompanyMemberRecord,

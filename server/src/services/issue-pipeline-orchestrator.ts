@@ -327,7 +327,16 @@ export function issuePipelineOrchestrator(
           },
         });
         // Replaying start repairs a crash between the run claim and its first
-        // event/task without duplicating either write.
+        // event/task without rematerializing stage one after the run advanced.
+        const existingFirstTask = (await stageRepository.listStageTasks(run.id)).find(
+          (task) => task.stageKey === frozenFirstStage.key && task.attempt === 1,
+        );
+        if (existingFirstTask) {
+          return { run, stageTask: existingFirstTask, created: claimed.created };
+        }
+        if (run.status !== "active" || run.currentStepKey !== frozenFirstStage.key) {
+          throw new Error(`pipeline run ${run.id} advanced before its first stage task was materialized`);
+        }
         const stageTask = await materializeStage(stageRepository, run, frozenFirstStage, 1);
         return { run, stageTask, created: claimed.created };
       });

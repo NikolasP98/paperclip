@@ -102,8 +102,9 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
-  if (process.env.DISABLE_UI === '1' && !process.env.HUB_PAPERCLIP_SHARED_SECRET) {
-    console.error('FATAL: DISABLE_UI=1 requires HUB_PAPERCLIP_SHARED_SECRET');
+  const hubSharedSecret = process.env.HUB_WORKFORCE_SHARED_SECRET ?? process.env.HUB_PAPERCLIP_SHARED_SECRET;
+  if (process.env.DISABLE_UI === '1' && !hubSharedSecret) {
+    console.error('FATAL: DISABLE_UI=1 requires HUB_WORKFORCE_SHARED_SECRET or HUB_PAPERCLIP_SHARED_SECRET');
     process.exit(1);
   }
 
@@ -797,6 +798,7 @@ export async function startServer(): Promise<StartedServer> {
       const promotion = await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRuns();
       await heartbeat.reconcileGithubClassifierIntake();
+      await heartbeat.reconcileFactoryIntakes();
       await heartbeat.reconcilePipelineDroneStages();
       const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
       if (
@@ -874,6 +876,7 @@ export async function startServer(): Promise<StartedServer> {
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
           await heartbeat.reconcileGithubClassifierIntake();
+          await heartbeat.reconcileFactoryIntakes();
           await heartbeat.reconcilePipelineDroneStages();
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
           if (

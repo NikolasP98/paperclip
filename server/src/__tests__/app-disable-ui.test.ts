@@ -163,6 +163,7 @@ vi.mock("../routes/adapters.js", () => ({ adapterRoutes: () => { const { Router 
 vi.mock("../routes/plugin-ui-static.js", () => ({ pluginUiStaticRoutes: () => { const { Router } = require("express"); return Router(); } }));
 
 import type { Db } from "@paperclipai/db";
+import { hubIdentityMiddleware } from "../middleware/hub-identity.js";
 import { createApp } from "../app.ts";
 
 const MINIMAL_OPTS = {
@@ -188,6 +189,8 @@ describe("createApp — DISABLE_UI=1", () => {
 
   afterEach(() => {
     delete process.env.DISABLE_UI;
+    delete process.env.HUB_WORKFORCE_SHARED_SECRET;
+    delete process.env.HUB_PAPERCLIP_SHARED_SECRET;
   });
 
   it("does not serve index.html when DISABLE_UI=1 (returns 404)", async () => {
@@ -211,5 +214,14 @@ describe("createApp — DISABLE_UI=1", () => {
     const app = await createApp(MINIMAL_DB, { ...MINIMAL_OPTS, uiMode: "static" });
     // Just verify it's an express app (has a `listen` method)
     expect(typeof app.listen).toBe("function");
+  });
+
+  it("mounts Hub identity with the workforce shared-secret alias", async () => {
+    process.env.HUB_WORKFORCE_SHARED_SECRET = "workforce-secret";
+    await createApp(MINIMAL_DB, { ...MINIMAL_OPTS, uiMode: "none" });
+    expect(vi.mocked(hubIdentityMiddleware)).toHaveBeenCalledWith({
+      secret: "workforce-secret",
+      db: MINIMAL_DB,
+    });
   });
 });

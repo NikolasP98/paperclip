@@ -44,6 +44,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { pipelineInboxRoutes } from "./routes/pipeline-inbox.js";
+import { factoryIntakeRoutes } from "./routes/factory-intakes.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -261,6 +262,9 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(pipelineInboxRoutes(db));
+  api.use(factoryIntakeRoutes(db, {
+    heartbeat: heartbeatService(db, { pluginWorkerManager: workerManager }),
+  }));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
@@ -395,9 +399,9 @@ export async function createApp(
       }).catch(console.error);
     }
   }
-  const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
-  if (HUB_PAPERCLIP_SHARED_SECRET) {
-    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET, db }));
+  const hubSharedSecret = process.env.HUB_WORKFORCE_SHARED_SECRET ?? process.env.HUB_PAPERCLIP_SHARED_SECRET;
+  if (hubSharedSecret) {
+    app.use("/api", hubIdentityMiddleware({ secret: hubSharedSecret, db }));
   }
   app.use("/api", api);
   app.use("/api", (_req, res) => {

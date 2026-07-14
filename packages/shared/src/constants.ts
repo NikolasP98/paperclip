@@ -257,6 +257,7 @@ export type IssueThreadInteractionContinuationPolicy =
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "github_issue",
+  "paperclip",
   "pipeline_step",
   "routine_execution",
   "stale_active_run_evaluation",
