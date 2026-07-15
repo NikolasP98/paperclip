@@ -25,6 +25,30 @@ export function resolveEffectiveChain(
 }
 
 /**
+ * Merge one chain level into the runtime config handed to an adapter.
+ *
+ * The primary chain entry is built from the persisted adapter config, while
+ * `resolvedConfig` contains its decrypted/plain runtime env. Preserve that
+ * resolved env instead of replacing it with persisted binding objects.
+ * Fallback levels retain their explicit overrides; this helper only corrects
+ * the primary entry, whose values have already been resolved.
+ */
+export function mergeAdapterChainLevelConfig(
+  resolvedConfig: Record<string, unknown>,
+  entry: AdapterChainEntry,
+  activeIndex: number,
+): Record<string, unknown> {
+  const merged = { ...resolvedConfig, ...entry };
+  if (activeIndex !== 0) return merged;
+  if (Object.prototype.hasOwnProperty.call(resolvedConfig, "env")) {
+    merged.env = resolvedConfig.env;
+  } else {
+    delete merged.env;
+  }
+  return merged;
+}
+
+/**
  * Decide whether a failed adapter result should advance to the next chain level.
  * Returns false for non-fallback-triggering errors (timeouts, panics, etc.).
  */

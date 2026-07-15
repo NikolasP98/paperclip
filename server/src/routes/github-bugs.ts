@@ -7,6 +7,10 @@ import { logActivity } from "../services/activity-log.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
 import { applyPipelineToCreateInput, resolvePipeline, type PipelineApplyTarget } from "../services/pipelines.js";
+import {
+  activateGithubStageTaskPipeline,
+  type GithubStageTaskIntakeConfig,
+} from "../services/github-stage-task-intake.js";
 import type { RepoSandboxService } from "../services/repo-sandbox.js";
 
 export interface GithubBugsDeps {
@@ -25,6 +29,10 @@ export interface GithubBugsDeps {
   reviewerAgentId?: string;
   /** approval-stage (HITL) user — final gate before an issue can complete */
   approverUserId?: string;
+  /** Explicit opt-in for classified, deterministically routed stage-task intake. */
+  stageTaskIntake?: {
+    config: GithubStageTaskIntakeConfig;
+  };
 }
 
 /**
@@ -80,7 +88,7 @@ export function pickSeverity(labels: string[]): IssuePriority {
 export type GithubEventOutcome =
   | { action: "ignored"; reason: string }
   | { action: "refreshed"; repo: string }
-  | { action: "created" | "duplicate" | "rewoken"; issueId: string };
+  | { action: "created" | "duplicate" | "rewoken"; issueId: string; pipelineRunId?: string };
 
 type GithubIssuePayload = {
   action?: string;
@@ -100,6 +108,7 @@ export async function handleGithubEvent(
   deps: GithubBugsDeps,
   event: string,
   payload: GithubIssuePayload,
+  options: { deliveryId?: string | null } = {},
 ): Promise<GithubEventOutcome> {
   if (event === "push") {
     const fullName = payload.repository?.full_name;
@@ -125,6 +134,22 @@ export async function handleGithubEvent(
   }
 
   const originId = `${fullName}#${gh.number}`;
+  const activateStageTasks = async (issue: typeof issues.$inferSelect) => {
+    if (!deps.stageTaskIntake) return null;
+    return activateGithubStageTaskPipeline({
+      db,
+      companyId: deps.companyId,
+      issue,
+      repository: fullName,
+      issueNumber: gh.number,
+      title: gh.title,
+      body: gh.body ?? "",
+      originalLabels: labels,
+      deliveryId: options.deliveryId,
+      config: deps.stageTaskIntake.config,
+      heartbeat: deps.heartbeat,
+    });
+  };
   // ponytail: no partial-unique DB index on (companyId, originKind, originId)
   // for originKind "github_issue" (unlike routine_execution etc. — see
   // packages/db/src/schema/issues.ts:95-143), so two concurrent deliveries of
@@ -145,7 +170,11 @@ export async function handleGithubEvent(
     .limit(1);
 
   if (existing) {
+    const activation = await activateStageTasks(existing);
     if (payload.action === "reopened") {
+      if (activation) {
+        return { action: "rewoken", issueId: existing.id, pipelineRunId: activation.run.id };
+      }
       await queueIssueAssignmentWakeup({
         heartbeat: deps.heartbeat,
         issue: existing,
@@ -157,7 +186,11 @@ export async function handleGithubEvent(
       });
       return { action: "rewoken", issueId: existing.id };
     }
-    return { action: "duplicate", issueId: existing.id };
+    return {
+      action: "duplicate",
+      issueId: existing.id,
+      ...(activation ? { pipelineRunId: activation.run.id } : {}),
+    };
   }
 
   // ponytail: if deps.agentId (GITHUB_BUGS_AGENT_ID) is pending approval or
@@ -181,20 +214,27 @@ export async function handleGithubEvent(
     originId,
     ...(deps.projectId ? { projectId: deps.projectId } : {}),
   };
-  const pipeline = await resolvePipeline(db, {
-    companyId: deps.companyId,
-    projectId: deps.projectId ?? null,
-    originKind: "github_issue",
-    labels,
-    priority,
-  });
-  // pipeline resolves to the seeded github-bugs-default pipeline (or an
-  // operator-authored override) — zero behavior change when nothing matches:
-  // fall back to the pre-pipelines fixed assignee/no-policy shape.
-  const pipelineInput = pipeline ? applyPipelineToCreateInput(pipeline, baseInput) : baseInput;
+  const pipelineInput = deps.stageTaskIntake
+    ? {
+        ...baseInput,
+        projectId: deps.stageTaskIntake.config.intakeProjectId,
+        pipelineId: deps.stageTaskIntake.config.pipelineId,
+      }
+    : await (async () => {
+        const pipeline = await resolvePipeline(db, {
+          companyId: deps.companyId,
+          projectId: deps.projectId ?? null,
+          originKind: "github_issue",
+          labels,
+          priority,
+        });
+        // Zero behavior change when nothing matches: preserve the legacy
+        // fixed assignee/no-policy shape.
+        return pipeline ? applyPipelineToCreateInput(pipeline, baseInput) : baseInput;
+      })();
   const created = await issueService(db).create(deps.companyId, {
     ...pipelineInput,
-    assigneeAgentId: pipelineInput.assigneeAgentId ?? deps.agentId,
+    assigneeAgentId: deps.stageTaskIntake ? null : pipelineInput.assigneeAgentId ?? deps.agentId,
     // issues.executionPolicy jsonb column is typed Record<string, unknown>
   } as Parameters<ReturnType<typeof issueService>["create"]>[1]);
 
@@ -207,6 +247,11 @@ export async function handleGithubEvent(
     entityId: created.id,
     details: { source: "github", repo: fullName, githubIssue: gh.number, url: gh.html_url },
   });
+
+  const activation = await activateStageTasks(created);
+  if (activation) {
+    return { action: "created", issueId: created.id, pipelineRunId: activation.run.id };
+  }
 
   await queueIssueAssignmentWakeup({
     heartbeat: deps.heartbeat,
@@ -233,7 +278,9 @@ export function githubBugRoutes(db: Db, deps: GithubBugsDeps): Router {
     }
     const event = req.get("x-github-event") ?? "";
     try {
-      const outcome = await handleGithubEvent(db, deps, event, req.body as GithubIssuePayload);
+      const outcome = await handleGithubEvent(db, deps, event, req.body as GithubIssuePayload, {
+        deliveryId: req.get("x-github-delivery") ?? null,
+      });
       res.json({ ok: true, ...outcome });
     } catch (err) {
       res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });

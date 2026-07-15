@@ -184,9 +184,22 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectMetadata, ProjectRoutingMetadata, ProjectWorkspace } from "./project.js";
 export type { Portfolio } from "./portfolio.js";
-export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./pipeline.js";
+export type * from "./agent-harness.js";
+export type {
+  IssuePipelineEvent,
+  IssuePipelineRouteCandidate,
+  IssuePipelineRoutingSnapshot,
+  IssuePipelineRun,
+  IssuePipelineSnapshot,
+  PipelineInboxItem,
+  PipelineInboxTarget,
+  Pipeline,
+  PipelineStep,
+  PipelineStepParticipant,
+  PipelineTrigger,
+} from "./pipeline.js";
 export type {
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
@@ -471,6 +484,7 @@ export type {
 } from "./resource-memberships.js";
 export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
 export type { InboxDismissal } from "./inbox-dismissal.js";
+export type * from "./factory-intake.js";
 export type {
   AccessUserProfile,
   CompanyMemberRecord,

@@ -276,4 +276,10 @@ describe("eval score gate — applyIssueExecutionPolicyTransition", () => {
     expect(result.decision?.score).toBeUndefined();
     expect(result.decision?.maxScore).toBeUndefined();
   });
+
+  it("non-eval stage records fractional feedbackScore without treating it as an eval gate", () => {
+    const policy = legacyReviewOnlyPolicy();
+    const result = applyIssueExecutionPolicyTransition({ issue: { status: "in_review", assigneeAgentId: reviewerAgentId, assigneeUserId: null, executionPolicy: policy, executionState: { status: "pending", currentStageId: policy.stages[0].id, currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewerAgentId }, returnAssignee: { type: "agent", agentId: coderAgentId }, reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }, policy, requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: reviewerAgentId }, commentBody: "Approved with minor concerns", feedbackScore: 8.5 });
+    expect(result.decision).toMatchObject({ outcome: "approved", score: 8.5, maxScore: 10 });
+  });
 });

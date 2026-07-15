@@ -24,6 +24,8 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issuePipelineEvents,
+  issuePipelineRuns,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -55,6 +57,7 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const mockAdapterCancelRun = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -88,6 +91,7 @@ vi.mock("../adapters/index.ts", async () => {
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
+      cancelRun: mockAdapterCancelRun,
     })),
   };
 });
@@ -302,6 +306,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       provider: "test",
       model: "test-model",
     }));
+    mockAdapterCancelRun.mockResolvedValue(undefined);
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -359,6 +364,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issuePipelineEvents);
+    await db.delete(issuePipelineRuns);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
@@ -1049,6 +1056,181 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("leaves failed pipeline Drone recovery to its finalizer while ordinary failures still recover", async () => {
+    const pipelineRun = await seedRunFixture({
+      adapterType: "minion_drone",
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    const pipelineOrchestrationRunId = randomUUID();
+    const pipelineId = randomUUID();
+    const pipelineSnapshot = {
+      pipelineId,
+      name: "Pipeline Drone recovery ownership",
+      description: null,
+      executionMode: "stage_tasks" as const,
+      trigger: null,
+      steps: [
+        {
+          key: "plan",
+          kind: "work" as const,
+          label: "Plan",
+          participant: { type: "agent" as const, agentId: pipelineRun.agentId },
+        },
+      ],
+    };
+    await db
+      .update(agents)
+      .set({ adapterConfig: { droneId: "portfolio-spec-planner-v1" } })
+      .where(eq(agents.id, pipelineRun.agentId));
+    await db
+      .update(issues)
+      .set({
+        originKind: "pipeline_step",
+        originId: pipelineOrchestrationRunId,
+        originFingerprint: "plan:1",
+      })
+      .where(eq(issues.id, pipelineRun.issueId));
+    await db.insert(issuePipelineRuns).values({
+      id: pipelineOrchestrationRunId,
+      companyId: pipelineRun.companyId,
+      pipelineId: null,
+      issueId: pipelineRun.issueId,
+      executionMode: "stage_tasks",
+      status: "active",
+      currentStepKey: "plan",
+      sourceOriginKind: "pipeline_step",
+      sourceOriginId: `pipeline-drone-recovery:${pipelineOrchestrationRunId}`,
+      pipelineSnapshot,
+      pipelineSnapshotHash: "pipeline-drone-recovery-snapshot",
+      routingSnapshot: {
+        repository: null,
+        originalLabels: [],
+        inferredLabels: [],
+        classifierOutput: null,
+        candidates: [],
+        selectedPortfolioId: null,
+        selectedProjectId: null,
+        confidence: 1,
+        resolution: "intake_fallback",
+        reason: "test",
+      },
+      routingSnapshotHash: "pipeline-drone-recovery-routing",
+      selectedPortfolioId: null,
+      selectedProjectId: null,
+      startedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: pipelineRun.issueId,
+          taskId: pipelineRun.issueId,
+          pipelineDroneStage: {
+            kind: "issue_pipeline_drone_stage_v1",
+            pipelineRunId: pipelineOrchestrationRunId,
+            stageTaskId: pipelineRun.issueId,
+            stageKey: "plan",
+            attempt: 1,
+            droneId: "portfolio-spec-planner-v1",
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, pipelineRun.runId));
+
+    const ordinaryRun = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db
+        .update(issues)
+        .set({ status: "done" })
+        .where(eq(issues.id, ordinaryRun.issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Recovered the ordinary failed task.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(2);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const pipelineRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, pipelineRun.agentId));
+    expect(pipelineRuns).toHaveLength(1);
+    expect(pipelineRuns[0]).toMatchObject({ id: pipelineRun.runId, status: "failed" });
+
+    const pipelineWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, pipelineRun.agentId));
+    expect(pipelineWakeups).toHaveLength(1);
+    expect(
+      pipelineWakeups.some(
+        (wakeup) =>
+          wakeup.reason === "issue_assignment_recovery" ||
+          wakeup.reason === "issue_continuation_needed",
+      ),
+    ).toBe(false);
+
+    const pipelineIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, pipelineRun.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(pipelineIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: pipelineRun.agentId,
+      executionRunId: null,
+      checkoutRunId: null,
+    });
+
+    const pipelineTerminalEvents = await db
+      .select()
+      .from(issuePipelineEvents)
+      .where(eq(issuePipelineEvents.pipelineRunId, pipelineOrchestrationRunId));
+    expect(pipelineTerminalEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventKey: `stage-terminal:${pipelineRun.issueId}`,
+          eventType: "stage_failed",
+          heartbeatRunId: pipelineRun.runId,
+        }),
+      ]),
+    );
+
+    const ordinaryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, ordinaryRun.agentId));
+    const recoveryRun = ordinaryRuns.find((run) => run.id !== ordinaryRun.runId);
+    expect(recoveryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId: ordinaryRun.issueId,
+      taskId: ordinaryRun.issueId,
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: ordinaryRun.runId,
+      source: "issue.continuation_recovery",
+    });
+
+    const pipelineRecoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.companyId, pipelineRun.companyId));
+    expect(pipelineRecoveryActions).toHaveLength(0);
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
@@ -1955,6 +2137,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    expect(mockAdapterCancelRun).toHaveBeenCalledWith(runId, "Cancelled by control plane");
   });
 
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {

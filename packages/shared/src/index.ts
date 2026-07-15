@@ -104,6 +104,9 @@ export {
   PROJECT_STATUSES,
   PORTFOLIO_STATUSES,
   PIPELINE_STEP_KINDS,
+  PIPELINE_EXECUTION_MODES,
+  ISSUE_PIPELINE_RUN_STATUSES,
+  ISSUE_PIPELINE_EVENT_TYPES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -230,6 +233,9 @@ export {
   type ProjectStatus,
   type PortfolioStatus,
   type PipelineStepKind,
+  type PipelineExecutionMode,
+  type IssuePipelineRunStatus,
+  type IssuePipelineEventType,
   type EnvironmentDriver,
   type EnvironmentStatus,
   type EnvironmentLeaseStatus,
@@ -441,6 +447,8 @@ export type {
   ProjectCodebaseOrigin,
   ProjectGoalRef,
   ProjectManagedByPlugin,
+  ProjectMetadata,
+  ProjectRoutingMetadata,
   ProjectWorkspace,
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
@@ -1438,11 +1446,26 @@ export type {
 export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
 
 export type { Portfolio } from "./types/portfolio.js";
-export type { Pipeline, PipelineStep, PipelineStepParticipant, PipelineTrigger } from "./types/pipeline.js";
+export type * from "./types/agent-harness.js";
+export type * from "./types/factory-intake.js";
+export type {
+  IssuePipelineEvent,
+  IssuePipelineRouteCandidate,
+  IssuePipelineRoutingSnapshot,
+  IssuePipelineRun,
+  IssuePipelineSnapshot,
+  PipelineInboxItem,
+  PipelineInboxTarget,
+  Pipeline,
+  PipelineStep,
+  PipelineStepParticipant,
+  PipelineTrigger,
+} from "./types/pipeline.js";
 
 export {
   pipelineStepParticipantSchema,
   pipelineStepSchema,
+  pipelineExecutionModeSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
   createPipelineSchema,
@@ -1459,6 +1482,32 @@ export {
   type CreatePortfolio,
   type UpdatePortfolio,
 } from "./validators/portfolio.js";
+
+export {
+  factoryIntakeSourceSchema,
+  factoryRoutingTargetSchema,
+  createFactoryIntakeSchema,
+  decideFactoryIntakeRoutingSchema,
+  type CreateFactoryIntake,
+  type DecideFactoryIntakeRouting,
+} from "./validators/factory-intake.js";
+
+export {
+  agentHarnessRoleKeySchema,
+  agentHarnessIdsQuerySchema,
+  createHarnessCapabilityProposalSchema,
+  createHarnessGuidanceProposalSchema,
+  createHarnessProposalSchema,
+  emptyHarnessGuidanceDecisionSchema,
+  harnessCapabilitySelectionChangeSchema,
+  harnessCapabilitySelectionSchema,
+  harnessGuidanceChangeSchema,
+  harnessProposalChangeSchema,
+  harnessRoleGuidanceSchema,
+  rejectHarnessGuidanceProposalSchema,
+  rollbackHarnessGuidanceProposalSchema,
+  roleRoutingPolicySchema,
+} from "./validators/agent-harness.js";
 
 export {
   adapterRegistryEntrySchema,

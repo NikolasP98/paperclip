@@ -113,6 +113,17 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  cancelRun as minionDroneCancelRun,
+  execute as minionDroneExecute,
+  getConfigSchema as getMinionDroneConfigSchema,
+  listModels as listMinionDroneModels,
+  testEnvironment as minionDroneTestEnvironment,
+} from "@paperclipai/adapter-minion-drone/server";
+import {
+  agentConfigurationDoc as minionDroneAgentConfigurationDoc,
+  models as minionDroneModels,
+} from "@paperclipai/adapter-minion-drone";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -397,6 +408,20 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const minionDroneAdapter: ServerAdapterModule = {
+  type: "minion_drone",
+  execute: minionDroneExecute,
+  cancelRun: minionDroneCancelRun,
+  testEnvironment: minionDroneTestEnvironment,
+  models: minionDroneModels,
+  listModels: async () => listMinionDroneModels(),
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: minionDroneAgentConfigurationDoc,
+  getConfigSchema: getMinionDroneConfigSchema,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -524,6 +549,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
+    minionDroneAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,

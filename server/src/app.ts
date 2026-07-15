@@ -21,6 +21,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { githubBugRoutes } from "./routes/github-bugs.js";
 import { seedGithubBugsPipeline } from "./services/pipelines.js";
+import { parseGithubStageTaskIntakeEnv } from "./services/github-stage-task-intake.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
@@ -29,6 +30,8 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { portfolioRoutes } from "./routes/portfolios.js";
 import { pipelineRoutes } from "./routes/pipelines.js";
+import { agentHarnessRoutes } from "./routes/agent-harnesses.js";
+import { issuePipelineRunRoutes } from "./routes/issue-pipeline-runs.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -40,6 +43,8 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
+import { pipelineInboxRoutes } from "./routes/pipeline-inbox.js";
+import { factoryIntakeRoutes } from "./routes/factory-intakes.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -256,6 +261,10 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
+  api.use(pipelineInboxRoutes(db));
+  api.use(factoryIntakeRoutes(db, {
+    heartbeat: heartbeatService(db, { pluginWorkerManager: workerManager }),
+  }));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
@@ -331,6 +340,8 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(agentHarnessRoutes(db));
+  api.use(issuePipelineRunRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -352,6 +363,7 @@ export async function createApp(
     const githubBugsProjectId = process.env.GITHUB_BUGS_PROJECT_ID?.trim();
     const githubBugsReviewerAgentId = process.env.GITHUB_BUGS_REVIEWER_AGENT_ID?.trim();
     const githubBugsApproverUserId = process.env.GITHUB_BUGS_APPROVER_USER_ID?.trim();
+    const stageTaskEnv = parseGithubStageTaskIntakeEnv(process.env);
     app.use(
       "/api",
       githubBugRoutes(db, {
@@ -364,6 +376,13 @@ export async function createApp(
         projectId: githubBugsProjectId,
         reviewerAgentId: githubBugsReviewerAgentId,
         approverUserId: githubBugsApproverUserId,
+        ...(stageTaskEnv
+          ? {
+              stageTaskIntake: {
+                config: stageTaskEnv.config,
+              },
+            }
+          : {}),
       }),
     );
     // Idempotent, zero-downtime cutover: seeds a `github-bugs-default`
@@ -380,9 +399,9 @@ export async function createApp(
       }).catch(console.error);
     }
   }
-  const HUB_PAPERCLIP_SHARED_SECRET = process.env.HUB_PAPERCLIP_SHARED_SECRET;
-  if (HUB_PAPERCLIP_SHARED_SECRET) {
-    app.use("/api", hubIdentityMiddleware({ secret: HUB_PAPERCLIP_SHARED_SECRET }));
+  const hubSharedSecret = process.env.HUB_WORKFORCE_SHARED_SECRET ?? process.env.HUB_PAPERCLIP_SHARED_SECRET;
+  if (hubSharedSecret) {
+    app.use("/api", hubIdentityMiddleware({ secret: hubSharedSecret, db }));
   }
   app.use("/api", api);
   app.use("/api", (_req, res) => {

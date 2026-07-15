@@ -156,6 +156,43 @@ Notes:
 - Without API keys, the app still runs normally.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 
+## GitHub Bug Webhook and Stage-Task Intake
+
+Pass GitHub intake variables into the Paperclip container explicitly (with
+Compose `environment`, `env_file`, or equivalent deployment configuration).
+The webhook route is mounted only when all four base variables are non-empty:
+
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_WEBHOOK_SECRET` | Secret used to verify GitHub's `X-Hub-Signature-256`; do not commit its value |
+| `GITHUB_BUGS_COMPANY_ID` | Company that owns ingested issues |
+| `GITHUB_BUGS_AGENT_ID` | Active legacy/fallback bug-fixer assignee; still required to mount the route when stage-task intake is enabled |
+| `GITHUB_BUG_REPO` | Exact accepted GitHub repository in `owner/repo` form |
+
+Classified stage-task intake is an additional all-or-nothing configuration. If
+`GITHUB_BUGS_STAGE_TASKS_PIPELINE_ID` is set, also set:
+
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_BUGS_INTAKE_PROJECT_ID` | Safe fallback project for low-confidence or unresolved routing |
+| `GITHUB_BUGS_CLASSIFIER_AGENT_ID` | Active company agent using the `minion_drone` adapter with drone id `portfolio-issue-classifier-v1` |
+| `GITHUB_BUGS_STAGE_TASK_ROUTES_JSON` | Operator-owned JSON route array emitted by the MINION Code seed |
+| `GITHUB_BUGS_CLASSIFIER_MIN_CONFIDENCE` | Optional `0..1` confidence floor; defaults to `0.7` |
+
+`GITHUB_BUGS_CLASSIFIER_AGENT_ID` is distinct from the legacy
+`GITHUB_BUGS_AGENT_ID`: the former owns the bounded classification heartbeat,
+while the latter remains the webhook mount/fallback assignee. The MINION Code
+seed prints the stage-task pipeline id, intake project id, classifier agent id,
+and routes JSON for deployment configuration:
+
+```sh
+pnpm seed:minion-code -- --help
+```
+
+Keep `GITHUB_WEBHOOK_SECRET` in the deployment secret store. The ids, repository
+name, confidence threshold, and routes are configuration metadata and contain no
+credential values.
+
 ## Podman Quadlet (systemd)
 
 The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQL as systemd services via Podman Quadlet.

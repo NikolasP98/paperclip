@@ -87,6 +87,8 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /** Wall-clock duration reported by a bounded remote runtime, in milliseconds. */
+  durationMs?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
@@ -358,6 +360,11 @@ export interface AdapterRuntimeCommandSpec {
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
+  /**
+   * Optional adapter-owned cancellation for non-process runtimes.
+   * The control plane calls this before finalizing a run as cancelled.
+   */
+  cancelRun?: (runId: string, reason?: string) => Promise<void>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;

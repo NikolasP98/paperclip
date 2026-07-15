@@ -141,6 +141,11 @@ describe("opencode remote execution", () => {
         model: "opencode/gpt-5-nano",
       },
       context: {
+        paperclipHarness: {
+          revisionId: "33333333-3333-4333-8333-333333333333",
+          roleKey: "implementer",
+          guidance: "Use the promoted OpenCode harness guidance for this task.",
+        },
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -201,7 +206,7 @@ describe("opencode remote execution", () => {
       expect.anything(),
     );
     const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, string, string[], { env: Record<string, string>; stdin?: string; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     const modelProbeCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("models")) as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
@@ -216,9 +221,11 @@ describe("opencode remote execution", () => {
     );
     expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
     const call = runCall as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, string, string[], { env: Record<string, string>; stdin?: string; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].stdin).toContain("## Paperclip Living Harness");
+    expect(call?.[3].stdin).toContain("Use the promoted OpenCode harness guidance for this task.");
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",

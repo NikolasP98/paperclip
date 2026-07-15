@@ -105,9 +105,15 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  issuePipelineStageTraversalService,
+  type IssuePipelineStageTraversalService,
+} from "../services/issue-pipeline-stage-traversal.js";
+import { assertPipelineHitlTerminalActor } from "../services/pipeline-inbox.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
+import { captureDecisionLearningSignal } from "../services/agent-harness.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
@@ -1028,6 +1034,7 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    pipelineStageTraversal?: IssuePipelineStageTraversalService;
   } = {},
 ) {
   const router = Router();
@@ -1036,6 +1043,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const pipelineStageTraversal = opts.pipelineStageTraversal ?? issuePipelineStageTraversalService(db, { heartbeat });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -4874,6 +4882,10 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      evalScore,
+      feedbackScore,
+      pipelineOutcome,
+      pipelineSummary,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -5065,6 +5077,14 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
+    if (
+      updateFields.status === "done" ||
+      updateFields.status === "blocked" ||
+      updateFields.status === "cancelled"
+    ) {
+      await assertPipelineHitlTerminalActor(db, existing, req.actor);
+    }
+
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
@@ -5082,7 +5102,8 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-      evalScore: req.body.evalScore === undefined ? undefined : (req.body.evalScore as number),
+      evalScore,
+      feedbackScore,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -5220,6 +5241,19 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (transition.decision && decisionId) {
+      const learningState = parseIssueExecutionState(existing.executionState);
+      const workerAgentId = learningState?.returnAssignee?.type === "agent"
+        ? learningState.returnAssignee.agentId ?? null
+        : null;
+      await captureDecisionLearningSignal(db, {
+        companyId: issue.companyId, issueId: issue.id, decisionId, workerAgentId,
+        outcome: transition.decision.outcome, score: transition.decision.score ?? null,
+        maxScore: transition.decision.maxScore ?? null, body: transition.decision.body,
+        runId: actor.runId ?? null,
+      }).catch((err) => logger.warn({ err, issueId: issue.id, decisionId }, "failed to capture agent learning signal"));
     }
 
     let cancelledStatusRunId: string | null = null;
@@ -5632,6 +5666,18 @@ export function issueRoutes(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
+    }
+
+    if (req.body.status !== undefined) {
+      await pipelineStageTraversal.afterCommittedIssueMutation({
+        issue,
+        pipelineOutcome,
+        pipelineSummary,
+        evalScore,
+        feedbackScore,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
     }
 
     const assigneeChanged =

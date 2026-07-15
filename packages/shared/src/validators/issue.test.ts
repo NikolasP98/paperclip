@@ -48,6 +48,22 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("accepts typed pipeline outcomes and bounded stage summaries", () => {
+    const parsed = updateIssueSchema.parse({
+      status: "done",
+      pipelineOutcome: "failed",
+      pipelineSummary: "Evaluator found a missing regression test",
+      evalScore: 6,
+    });
+
+    expect(parsed).toMatchObject({
+      pipelineOutcome: "failed",
+      pipelineSummary: "Evaluator found a missing regression test",
+      evalScore: 6,
+    });
+    expect(updateIssueSchema.safeParse({ pipelineOutcome: "retry" }).success).toBe(false);
+  });
+
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

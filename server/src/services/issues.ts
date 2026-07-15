@@ -4552,16 +4552,17 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const childProjectId = issueData.projectId ?? parent.projectId;
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
+        projectId: childProjectId,
         goalId: issueData.goalId ?? parent.goalId,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        inheritExecutionWorkspaceFromIssueId: childProjectId === parent.projectId ? parent.id : null,
       });
 
       if (blockParentUntilDone) {
@@ -4859,6 +4860,10 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
+      const workspaceInheritanceSourceWasSpecified = Object.prototype.hasOwnProperty.call(
+        data,
+        "inheritExecutionWorkspaceFromIssueId",
+      );
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -4890,7 +4895,9 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const workspaceInheritanceIssueId = workspaceInheritanceSourceWasSpecified
+          ? inheritExecutionWorkspaceFromIssueId
+          : issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
@@ -4901,7 +4908,22 @@ export function issueService(db: Db) {
             issueData.projectId = workspaceSource.projectId;
           }
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
-            projectWorkspaceId = workspaceSource.projectWorkspaceId;
+            const sourceProjectWorkspace = await tx
+              .select({
+                id: projectWorkspaces.id,
+                projectId: projectWorkspaces.projectId,
+              })
+              .from(projectWorkspaces)
+              .where(
+                and(
+                  eq(projectWorkspaces.id, workspaceSource.projectWorkspaceId),
+                  eq(projectWorkspaces.companyId, companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (sourceProjectWorkspace?.projectId === issueData.projectId) {
+              projectWorkspaceId = sourceProjectWorkspace.id;
+            }
           }
           if (
             isolatedWorkspacesEnabled &&
@@ -4912,11 +4934,17 @@ export function issueService(db: Db) {
               .select({
                 id: executionWorkspaces.id,
                 mode: executionWorkspaces.mode,
+                projectId: executionWorkspaces.projectId,
               })
               .from(executionWorkspaces)
-              .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
+              .where(
+                and(
+                  eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId),
+                  eq(executionWorkspaces.companyId, companyId),
+                ),
+              )
               .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
+            if (sourceWorkspace?.projectId === issueData.projectId) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
@@ -5125,9 +5153,9 @@ export function issueService(db: Db) {
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+        if (issueData.executionWorkspaceId !== null) delete issueData.executionWorkspaceId;
+        if (issueData.executionWorkspacePreference !== null) delete issueData.executionWorkspacePreference;
+        if (issueData.executionWorkspaceSettings !== null) delete issueData.executionWorkspaceSettings;
       }
 
       if (issueData.status) {

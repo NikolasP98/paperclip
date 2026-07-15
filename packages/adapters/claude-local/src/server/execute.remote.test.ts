@@ -124,6 +124,11 @@ describe("claude remote execution", () => {
         },
       },
       context: {
+        paperclipHarness: {
+          revisionId: "11111111-1111-4111-8111-111111111111",
+          roleKey: "implementer",
+          guidance: "Use the promoted Claude harness guidance for this task.",
+        },
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -176,13 +181,15 @@ describe("claude remote execution", () => {
     }));
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, string, string[], { env: Record<string, string>; stdin?: string; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[2]).toContain("--append-system-prompt-file");
     expect(call?.[2]).toContain(
       `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,
     );
     expect(call?.[2]).toContain("--add-dir");
+    expect(call?.[3].stdin).toContain("## Paperclip Living Harness");
+    expect(call?.[3].stdin).toContain("Use the promoted Claude harness guidance for this task.");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();

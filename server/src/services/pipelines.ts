@@ -25,6 +25,7 @@ function rowToPipeline(row: PipelineTableRow): Pipeline {
     projectId: row.projectId,
     name: row.name,
     description: row.description,
+    executionMode: row.executionMode === "stage_tasks" ? "stage_tasks" : "inline",
     trigger: (row.trigger as PipelineTrigger | null) ?? null,
     steps: (row.steps as unknown as PipelineStep[] | null) ?? [],
     sortOrder: row.sortOrder,
@@ -60,6 +61,9 @@ export interface CompiledPipeline {
 }
 
 export function compilePipeline(pipeline: Pipeline): CompiledPipeline {
+  if (pipeline.executionMode === "stage_tasks") {
+    throw new Error("stage_tasks pipelines must be materialized by the issue pipeline orchestrator");
+  }
   const [workStep, ...gateSteps] = pipeline.steps;
 
   const assigneeAgentId =
@@ -81,6 +85,9 @@ export function compilePipeline(pipeline: Pipeline): CompiledPipeline {
 }
 
 function buildCompiledStage(step: PipelineStep): IssueExecutionStage {
+  if (step.participant.type === "role") {
+    throw new Error("Role participants cannot be compiled into inline issue execution policies");
+  }
   const participant: IssueExecutionStageParticipant = {
     id: randomUUID(),
     type: step.participant.type,

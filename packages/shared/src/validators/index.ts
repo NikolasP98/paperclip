@@ -527,6 +527,7 @@ export {
 export {
   pipelineStepParticipantSchema,
   pipelineStepSchema,
+  pipelineExecutionModeSchema,
   pipelineTriggerSchema,
   pipelineStepsSchema,
   createPipelineSchema,
@@ -543,6 +544,32 @@ export {
   type CreatePortfolio,
   type UpdatePortfolio,
 } from "./portfolio.js";
+
+export {
+  factoryIntakeSourceSchema,
+  factoryRoutingTargetSchema,
+  createFactoryIntakeSchema,
+  decideFactoryIntakeRoutingSchema,
+  type CreateFactoryIntake,
+  type DecideFactoryIntakeRouting,
+} from "./factory-intake.js";
+
+export {
+  agentHarnessRoleKeySchema,
+  agentHarnessIdsQuerySchema,
+  createHarnessCapabilityProposalSchema,
+  createHarnessGuidanceProposalSchema,
+  createHarnessProposalSchema,
+  emptyHarnessGuidanceDecisionSchema,
+  harnessCapabilitySelectionChangeSchema,
+  harnessCapabilitySelectionSchema,
+  harnessGuidanceChangeSchema,
+  harnessProposalChangeSchema,
+  harnessRoleGuidanceSchema,
+  rejectHarnessGuidanceProposalSchema,
+  rollbackHarnessGuidanceProposalSchema,
+  roleRoutingPolicySchema,
+} from "./agent-harness.js";
 
 export {
   jsonSchemaSchema,

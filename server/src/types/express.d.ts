@@ -19,9 +19,11 @@ declare global {
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
+        /** Trusted Hub role claims. Present only after a signed Hub identity is verified. */
+        roleKeys?: string[];
+        source?: "local_implicit" | "session" | "hub_identity" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
       };
-      user?: { id: string; email: string | null; name: string | null };
+      user?: { id: string; email: string | null; name: string | null; roleKeys?: string[] };
       companyId?: string | null;
     }
   }

@@ -12,6 +12,10 @@ export interface HeartbeatRun {
   id: string;
   companyId: string;
   agentId: string;
+  harnessRevisionId?: string | null;
+  resolvedAdapterType?: string | null;
+  resolvedModel?: string | null;
+  resolvedProvider?: string | null;
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;

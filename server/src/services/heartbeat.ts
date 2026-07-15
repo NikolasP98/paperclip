@@ -56,6 +56,16 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { notifyGithubBugRunFailure } from "./github-bugs-notify.js";
+import {
+  finalizeGithubClassifierHeartbeat,
+  reconcileGithubClassifierRuns,
+} from "./github-stage-task-intake.js";
+import {
+  finalizePipelineDroneHeartbeat,
+  hasValidPipelineDroneStageContext,
+  reconcilePipelineDroneRuns,
+} from "./issue-pipeline-drone-stages.js";
+import { finalizeFactoryIntakeScoutHeartbeat, reconcileFactoryIntakeRuns } from "./factory-intake.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -104,6 +114,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentHarnessService } from "./agent-harness.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -183,6 +194,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   resolveEffectiveChain,
+  mergeAdapterChainLevelConfig,
   shouldAdvanceChain,
   classifyFallbackReason,
   parseQuotaResetAt,
@@ -1759,7 +1771,15 @@ type ResumeSessionRow = {
   sessionParamsJson: Record<string, unknown> | null;
   sessionDisplayId: string | null;
   lastRunId: string | null;
+  harnessRevisionId?: string | null;
 };
+
+export function shouldResetTaskSessionForHarnessRevision(input: {
+  currentHarnessRevisionId: string | null;
+  taskSessionHarnessRevisionId: string | null;
+}) {
+  return input.currentHarnessRevisionId !== input.taskSessionHarnessRevisionId;
+}
 
 export function buildExplicitResumeSessionOverride(input: {
   adapterType?: string | null;
@@ -4270,6 +4290,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeRun = await db
       .select({
         id: heartbeatRuns.id,
+        harnessRevisionId: heartbeatRuns.harnessRevisionId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         resultJson: heartbeatRuns.resultJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
@@ -4309,6 +4330,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     return {
       resumeFromRunId,
+      harnessRevisionId: resumeTaskSession?.harnessRevisionId ?? resumeRun.harnessRevisionId,
       taskKey: resumeTaskKey,
       issueId: readNonEmptyString(resumeContext.issueId),
       taskId: readNonEmptyString(resumeContext.taskId) ?? readNonEmptyString(resumeContext.issueId),
@@ -4532,6 +4554,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     taskKey: string;
     sessionParamsJson: Record<string, unknown> | null;
     sessionDisplayId: string | null;
+    harnessRevisionId: string | null;
     lastRunId: string | null;
     lastError: string | null;
   }) {
@@ -4547,6 +4570,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .set({
           sessionParamsJson: input.sessionParamsJson,
           sessionDisplayId: input.sessionDisplayId,
+          harnessRevisionId: input.harnessRevisionId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
           updatedAt: new Date(),
@@ -4565,6 +4589,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         taskKey: input.taskKey,
         sessionParamsJson: input.sessionParamsJson,
         sessionDisplayId: input.sessionDisplayId,
+        harnessRevisionId: input.harnessRevisionId,
         lastRunId: input.lastRunId,
         lastError: input.lastError,
       })
@@ -7545,6 +7570,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
+      await finalizeGithubClassifierHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped GitHub classifier heartbeat",
+        );
+      });
+      await finalizeFactoryIntakeScoutHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped factory intake classifier heartbeat",
+        );
+      });
+      await finalizePipelineDroneHeartbeat({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        run: finalizedRun,
+      }).catch((err) => {
+        logger.error(
+          { err, heartbeatRunId: finalizedRun.id },
+          "failed to finalize reaped pipeline Drone heartbeat",
+        );
+      });
+
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -7792,6 +7848,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+    const harness = await agentHarnessService(db).compactContext(agent.id, agent.companyId);
+    if (harness) {
+      context.paperclipHarness = harness;
+      await db.update(heartbeatRuns).set({
+        harnessRevisionId: harness.revisionId,
+        contextSnapshot: context,
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, run.id));
+    }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
@@ -7946,22 +8011,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       configuredModel,
       taskSessionParams: taskSessionDecodedParams,
     });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
+    const currentHarnessRevisionId = harness?.revisionId ?? null;
+    const harnessChangedSinceTaskSession =
+      taskSession != null &&
+      shouldResetTaskSessionForHarnessRevision({
+        currentHarnessRevisionId,
+        taskSessionHarnessRevisionId: taskSession.harnessRevisionId,
+      });
+    const explicitResumeHarnessRevisionId = readNonEmptyString(context.resumeHarnessRevisionId);
+    const explicitHarnessRevisionMismatch =
+      Boolean(context.resumeSessionParams || context.resumeSessionDisplayId) &&
+      explicitResumeHarnessRevisionId !== currentHarnessRevisionId;
+    const resetTaskSession =
+      shouldResetTaskSessionForWake(context) ||
+      modelChangedSinceTaskSession ||
+      harnessChangedSinceTaskSession ||
+      explicitHarnessRevisionMismatch;
     const wakeSessionResetReason = describeSessionResetReason(context);
     const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
     const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
       ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
       : null;
-    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
+    const harnessSessionResetReason =
+      harnessChangedSinceTaskSession || explicitHarnessRevisionMismatch
+        ? `harness revision changed to "${currentHarnessRevisionId ?? "none"}"`
+        : null;
+    const sessionResetReason = [
+      modelSessionResetReason,
+      harnessSessionResetReason,
+      wakeSessionResetReason,
+    ]
       .filter((value): value is string => Boolean(value))
       .join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
-      agent.adapterType,
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
-    );
+    const explicitResumeSessionParams = explicitHarnessRevisionMismatch
+      ? null
+      : normalizeResumeParamsForAdapter(
+          agent.adapterType,
+          sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+        );
     const explicitResumeSessionDisplayId = truncateDisplayId(
-      readNonEmptyString(context.resumeSessionDisplayId) ??
+      (explicitHarnessRevisionMismatch ? null : readNonEmptyString(context.resumeSessionDisplayId)) ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
@@ -8987,6 +9077,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       while (activeIndex < effectiveChain.length) {
         const entry = effectiveChain[activeIndex];
+        await db.update(heartbeatRuns).set({
+          resolvedAdapterType: entry.type,
+          resolvedModel: readNonEmptyString(entry.model),
+          resolvedProvider: readNonEmptyString(entry.provider),
+          updatedAt: new Date(),
+        }).where(eq(heartbeatRuns.id, run.id));
         const adapter = getServerAdapter(entry.type);
         const authToken = adapter.supportsLocalAgentJwt
           ? createLocalAgentJwt(agent.id, agent.companyId, entry.type, run.id)
@@ -8997,7 +9093,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
           );
         }
-        const levelRuntimeConfig = { ...runtimeConfig, ...entry };
+        const levelRuntimeConfig = mergeAdapterChainLevelConfig(
+          runtimeConfig,
+          entry,
+          activeIndex,
+        );
 
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -9214,6 +9314,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
 
       let persistedRun = await setRunStatus(run.id, status, {
+        resolvedAdapterType: effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.type ?? agent.adapterType,
+        resolvedModel: readNonEmptyString(adapterResult.model) ?? readNonEmptyString(effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.model),
+        resolvedProvider: readNonEmptyString(adapterResult.provider) ?? readNonEmptyString(effectiveChain[Math.min(activeIndex, effectiveChain.length - 1)]?.provider),
         finishedAt: new Date(),
         error: runErrorMessage,
         errorCode: runErrorCode,
@@ -9372,6 +9475,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               taskKey,
               sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
               sessionDisplayId: nextSessionState.displayId,
+              harnessRevisionId: currentHarnessRevisionId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
             });
@@ -9455,6 +9559,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             taskKey,
             sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
             sessionDisplayId: previousSessionDisplayId,
+            harnessRevisionId: currentHarnessRevisionId,
             lastRunId: failedRun.id,
             lastError: message,
           });
@@ -9508,7 +9613,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
-          const latestRun = await getRun(run.id).catch(() => null);
+          const latestRun = await getRun(run.id, { unsafeFullResultJson: true }).catch(() => null);
+          if (latestRun) {
+            await finalizeGithubClassifierHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize GitHub classifier heartbeat",
+              );
+            });
+            await finalizeFactoryIntakeScoutHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize factory intake classifier heartbeat",
+              );
+            });
+            await finalizePipelineDroneHeartbeat({
+              db,
+              heartbeat: { wakeup: enqueueWakeup },
+              run: latestRun,
+            }).catch((err) => {
+              logger.error(
+                { err, heartbeatRunId: latestRun.id },
+                "failed to finalize pipeline Drone heartbeat",
+              );
+            });
+          }
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,
@@ -9926,6 +10063,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      // Pipeline Drone terminal state has a dedicated, idempotent finalizer.
+      // This transaction still owns execution/checkout lock release and any
+      // pre-existing deferred wake, but must not race that finalizer by adding
+      // generic assignment/continuation recovery for the stage task.
+      if (hasValidPipelineDroneStageContext(run.contextSnapshot)) {
+        return { kind: "released" as const };
+      }
+
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
@@ -10168,6 +10313,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
+      enrichedContextSnapshot.resumeHarnessRevisionId = explicitResumeSession.harnessRevisionId;
       enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
       enrichedContextSnapshot.resumeSessionParams = explicitResumeSession.sessionParams;
       if (!readNonEmptyString(enrichedContextSnapshot.issueId) && explicitResumeSession.issueId) {
@@ -11031,6 +11177,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  async function cancelAdapterOwnedRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "resolvedAdapterType">,
+    fallbackAdapterType: string,
+    reason: string,
+  ) {
+    const adapterType = run.resolvedAdapterType ?? fallbackAdapterType;
+    const adapter = getServerAdapter(adapterType);
+    if (!adapter.cancelRun) return;
+    try {
+      await adapter.cancelRun(run.id, reason);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: run.id, adapterType },
+        "adapter-owned run cancellation failed; continuing control-plane cancellation",
+      );
+    }
+  }
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -11047,6 +11211,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(options.resultJson ?? {}),
         }
       : options.resultJson;
+
+    if (agent) {
+      await cancelAdapterOwnedRun(run, agent.adapterType, reason);
+    }
 
     const running = runningProcesses.get(run.id);
     try {
@@ -11103,6 +11271,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      if (agent) {
+        await cancelAdapterOwnedRun(run, agent.adapterType, reason);
+      }
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
@@ -11471,6 +11642,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileGithubClassifierIntake: (companyId?: string) =>
+      reconcileGithubClassifierRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
+    reconcileFactoryIntakes: (companyId?: string) =>
+      reconcileFactoryIntakeRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
+    reconcilePipelineDroneStages: (companyId?: string) =>
+      reconcilePipelineDroneRuns({
+        db,
+        heartbeat: { wakeup: enqueueWakeup },
+        companyId,
+      }),
 
     sweepStaleIssueLocks,
 

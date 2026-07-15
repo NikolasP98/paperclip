@@ -88,6 +88,18 @@ export const issues = pgTable(
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     pipelineIdx: index("issues_company_pipeline_idx").on(table.companyId, table.pipelineId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
+    pipelineStepIdentityIdx: uniqueIndex("issues_pipeline_step_identity_uq")
+      .on(table.companyId, table.originKind, table.originId, table.originFingerprint)
+      .where(
+        sql`${table.originKind} = 'pipeline_step'
+          and ${table.originId} is not null`,
+      ),
+    paperclipIntakeIdentityIdx: uniqueIndex("issues_paperclip_intake_identity_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'paperclip'
+          and ${table.originId} is not null`,
+      ),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),

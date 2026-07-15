@@ -52,6 +52,8 @@ type TransitionInput = {
   monitorExplicitlyUpdated?: boolean;
   /** Score submitted alongside a `done` request. Only consulted when the active stage is an eval stage (stage.meta?.kind === "eval"); ignored otherwise (spec risk #2). */
   evalScore?: number | null;
+  /** Optional governed feedback for non-eval review/approval stages. */
+  feedbackScore?: number | null;
 };
 
 type TransitionResult = {
@@ -705,7 +707,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     const isEvalStage = activeStageMeta?.kind === "eval";
     const evalScoreFields = isEvalStage
       ? { score: input.evalScore ?? null, maxScore: activeStageMeta?.maxScore ?? null }
-      : {};
+      : input.feedbackScore == null ? {} : { score: input.feedbackScore, maxScore: 10 };
 
     // Shared by the explicit "request changes" transition and the eval
     // score-below-minScore bounce (§2.4) — same machine, same requirements.

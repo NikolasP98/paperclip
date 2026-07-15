@@ -750,6 +750,48 @@
 			"when": 1700006360000,
 			"tag": "0106_decision_scores",
 			"breakpoints": true
+		},
+		{
+			"idx": 107,
+			"version": "7",
+			"when": 1700006420000,
+			"tag": "0107_agent_living_harness",
+			"breakpoints": true
+		},
+		{
+			"idx": 108,
+			"version": "7",
+			"when": 1700006480000,
+			"tag": "0108_issue_pipeline_runs",
+			"breakpoints": true
+		},
+		{
+			"idx": 109,
+			"version": "7",
+			"when": 1700006540000,
+			"tag": "0109_pipeline_step_identity",
+			"breakpoints": true
+		},
+		{
+			"idx": 110,
+			"version": "7",
+			"when": 1700006600000,
+			"tag": "0110_project_metadata",
+			"breakpoints": true
+		},
+		{
+			"idx": 111,
+			"version": "7",
+			"when": 1700006660000,
+			"tag": "0111_harness_guidance_governance",
+			"breakpoints": true
+		},
+		{
+			"idx": 112,
+			"version": "7",
+			"when": 1700006720000,
+			"tag": "0112_factory_intake_identity",
+			"breakpoints": true
 		}
 	]
 }
