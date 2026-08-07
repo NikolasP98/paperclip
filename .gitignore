@@ -66,3 +66,6 @@ infisical-dev.sh
 
 # Serena MCP server workspace cache (per-user, not committed)
 .serena/
+
+# vault-backed docs live in the meta-repo's docs project (Minion Docs/paperclip); Synology can't sync symlinks
+/docs
