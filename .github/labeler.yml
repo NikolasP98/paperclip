@@ -1,0 +1,70 @@
+# GENERATED FILE — do not edit.
+# Source: routing.yml in NikolasP98/minion-meta (pnpm run routing:generate).
+# Target repo: paperclip. Install: copy verbatim to .github/labeler.yml
+# (drift is caught by `node scripts/routing.mjs verify-remote` in minion-meta).
+
+ui:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.css"
+          - "**/*.tsx"
+          - "ui/**"
+logic:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "cli/**"
+          - "packages/*/src/**"
+          - "server/**"
+data:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/migrations/**"
+          - "packages/db/**"
+infra:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/Dockerfile"
+          - ".changeset/**"
+          - ".github/**"
+          - "Dockerfile"
+          - "Dockerfile.*"
+          - "deploy/**"
+          - "docker-compose*.yml"
+          - "docker/**"
+          - "playwright.config.ts"
+          - "vite.config.ts"
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "**/*.mdx"
+          - "AGENTS.md"
+          - "CLAUDE.md"
+          - "README*"
+          - "docs/**"
+test:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.spec.js"
+          - "**/*.spec.ts"
+          - "**/*.spec.tsx"
+          - "**/*.test.js"
+          - "**/*.test.mjs"
+          - "**/*.test.ts"
+          - "**/*.test.tsx"
+          - "**/__tests__/**"
+          - "**/fixtures/**"
+          - "e2e/**"
+          - "test/**"
+          - "tests/**"
+deps:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/package.json"
+          - "**/requirements.txt"
+          - "bun.lock"
+          - "bun.lockb"
+          - "package-lock.json"
+          - "package.json"
+          - "pnpm-lock.yaml"
+          - "pnpm-workspace.yaml"
